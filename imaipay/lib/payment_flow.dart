@@ -292,6 +292,53 @@ class _PaymentFlowScreenState extends State<PaymentFlowScreen> {
     );
   }
 
+  void _showManualRecipientDialog() {
+    final nameCtrl = TextEditingController(text: 'Grandson Alex');
+    final phoneCtrl = TextEditingController(text: '+919876543210');
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Enter Recipient', style: TextStyle(fontWeight: FontWeight.bold)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: nameCtrl,
+              decoration: const InputDecoration(labelText: 'Name (e.g. Grandson Alex)'),
+              style: const TextStyle(fontSize: 18),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: phoneCtrl,
+              decoration: const InputDecoration(labelText: 'Phone Number'),
+              keyboardType: TextInputType.phone,
+              style: const TextStyle(fontSize: 18),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              final name = nameCtrl.text.trim().isEmpty ? 'Recipient' : nameCtrl.text.trim();
+              final phone = _cleanPhoneNumber(phoneCtrl.text.trim());
+              Navigator.pop(ctx);
+              setState(() {
+                _selectedContactName = name;
+                _selectedPhoneNumber = phone;
+              });
+              _nextPage();
+            },
+            child: const Text('Continue'),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildWhoScreen() {
     return Padding(
       padding: const EdgeInsets.all(24.0),
@@ -299,13 +346,43 @@ class _PaymentFlowScreenState extends State<PaymentFlowScreen> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           const Text('Who are you paying?', style: TextStyle(fontSize: 40, fontWeight: FontWeight.bold, height: 1.1)),
-          const SizedBox(height: 32),
+          const SizedBox(height: 24),
+          OutlinedButton.icon(
+            onPressed: _showManualRecipientDialog,
+            icon: const Icon(Icons.edit_outlined, size: 24),
+            label: const Text('Enter Name / Phone Manually', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            style: OutlinedButton.styleFrom(
+              padding: const EdgeInsets.symmetric(vertical: 14),
+              foregroundColor: const Color(0xFF6C63FF),
+              side: const BorderSide(color: Color(0xFF6C63FF), width: 1.5),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            ),
+          ),
+          const SizedBox(height: 24),
           if (_contacts == null)
             const Expanded(child: Center(child: CircularProgressIndicator()))
           else if (_contacts!.isEmpty)
-            const Expanded(
+            Expanded(
               child: Center(
-                child: Text('No contacts found.', style: TextStyle(fontSize: 24, color: Colors.grey)),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.contacts_outlined, size: 64, color: Colors.black26),
+                    const SizedBox(height: 16),
+                    const Text('No phone contacts found.', style: TextStyle(fontSize: 20, color: Colors.black54)),
+                    const SizedBox(height: 16),
+                    ElevatedButton(
+                      onPressed: _showManualRecipientDialog,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF6C63FF),
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                      ),
+                      child: const Text('Enter Recipient Details', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                    ),
+                  ],
+                ),
               ),
             )
           else

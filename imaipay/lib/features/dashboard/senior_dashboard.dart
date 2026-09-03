@@ -247,14 +247,18 @@ class SeniorDashboard extends StatelessWidget {
                         final status = txData['status']?.toString() ?? 'unknown';
                         final createdAt = (txData['createdAt'] as Timestamp?)?.toDate();
                         
-                        final isPending = status == 'pending' || status == 'escrow' || status == 'in_escrow' || status == 'pending_guardian';
+                        final isPending = status == 'pending' || status == 'escrow' || status == 'in_escrow' || status == 'pending_guardian' || status == 'flagged';
                         
                         // Check if within escrow delay
                         bool isWithinDelay = false;
-                        if (isPending && createdAt != null) {
-                          final diff = DateTime.now().difference(createdAt).inMinutes;
-                          if (diff < escrowDelayMinutes) {
+                        if (isPending) {
+                          if (createdAt == null) {
                             isWithinDelay = true;
+                          } else {
+                            final diff = DateTime.now().difference(createdAt).inMinutes;
+                            if (diff < escrowDelayMinutes) {
+                              isWithinDelay = true;
+                            }
                           }
                         }
 
