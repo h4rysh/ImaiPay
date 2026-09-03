@@ -1,0 +1,1 @@
+{"flutter":{"platforms":{"android":{"default":{"projectId":"imaipay","appId":"1:961632797049:android:70b60d634317498aad6fa8","fileOutput":"android/app/google-services.json"}},"dart":{"lib/firebase_options.dart":{"projectId":"imaipay","configurations":{"android":"1:961632797049:android:70b60d634317498aad6fa8","web":"1:961632797049:web:d3d465e6d10bf81fad6fa8"}}}}}}

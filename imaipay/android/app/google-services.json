@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "961632797049",
+    "project_id": "imaipay",
+    "storage_bucket": "imaipay.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:961632797049:android:70b60d634317498aad6fa8",
+        "android_client_info": {
+          "package_name": "com.example.imaipay"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAfr2b19n-m4uf4sTNfNwJUEFBGalDUIDw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
