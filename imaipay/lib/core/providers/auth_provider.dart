@@ -20,20 +20,40 @@ class AuthProvider extends ChangeNotifier {
   AuthProvider() {
     _auth.authStateChanges().listen((user) async {
       _user = user;
-      if (user != null) {
-        await _fetchUserProfile(user.uid);
-      } else {
+      try {
+        if (user != null) {
+          await _fetchUserProfile(user.uid);
+        } else {
+          _userProfile = null;
+        }
+      } catch (e) {
+        debugPrint('Error fetching user profile: $e');
         _userProfile = null;
+      } finally {
+        _isLoading = false;
+        notifyListeners();
       }
-      _isLoading = false;
-      notifyListeners();
     });
   }
 
+  Future<void> fetchProfileAgain() async {
+    if (_user != null) {
+      await _fetchUserProfile(_user!.uid);
+      notifyListeners();
+    }
+  }
+
   Future<void> _fetchUserProfile(String uid) async {
-    final doc = await _firestore.collection('users').doc(uid).get();
-    if (doc.exists) {
-      _userProfile = UserProfile.fromMap(doc.data()!, doc.id);
+    try {
+      final doc = await _firestore.collection('users').doc(uid).get();
+      if (doc.exists) {
+        _userProfile = UserProfile.fromMap(doc.data()!, doc.id);
+      } else {
+        _userProfile = null;
+      }
+    } catch (e) {
+      debugPrint('Firestore fetch error: $e');
+      _userProfile = null;
     }
   }
 
@@ -114,6 +134,15 @@ class AuthProvider extends ChangeNotifier {
     );
     notifyListeners();
     return code;
+  }
+
+  Future<void> skipLinkingForDemo() async {
+    if (_user == null || _userProfile == null) return;
+    await _firestore.collection('users').doc(_user!.uid).update({
+      'linkedGuardianId': 'demo_guardian_1',
+    });
+    await _fetchUserProfile(_user!.uid);
+    notifyListeners();
   }
 
   Future<bool> linkWithCode(String code) async {

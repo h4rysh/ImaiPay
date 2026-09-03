@@ -244,6 +244,20 @@ class LinkingScreen extends StatelessWidget {
             ),
           ),
         ),
+        const SizedBox(height: 16),
+        TextButton(
+          onPressed: () {
+            context.read<AuthProvider>().skipLinkingForDemo();
+          },
+          child: const Text(
+            'Skip for Now (Explore Senior Dashboard) →',
+            style: TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.w600,
+              color: Color(0xFF6C63FF),
+            ),
+          ),
+        ),
       ],
     );
   }

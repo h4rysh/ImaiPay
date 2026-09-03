@@ -6,7 +6,6 @@ import 'core/providers/auth_provider.dart';
 import 'core/providers/wallet_provider.dart';
 import 'core/models/user_profile.dart';
 import 'features/auth/auth_screen.dart';
-import 'features/auth/linking_screen.dart';
 import 'features/dashboard/senior_home_wrapper.dart';
 import 'features/dashboard/guardian_dashboard.dart';
 
@@ -62,9 +61,6 @@ class ImaiPayApp extends StatelessWidget {
             }
 
             if (userProfile.role == UserRole.senior) {
-              if (userProfile.linkedGuardianId == null || userProfile.linkedGuardianId!.isEmpty) {
-                return LinkingScreen(userProfile: userProfile);
-              }
               return const SeniorHomeWrapper();
             }
 
