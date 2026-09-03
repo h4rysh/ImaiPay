@@ -13,8 +13,8 @@ void main() async {
   runApp(const ImaiPayApp());
 }
 
-const String MOCK_SENIOR_ID = 'senior_user_1';
-const String MOCK_GUARDIAN_ID = 'guardian_user_1';
+const String mockSeniorId = 'senior_user_1';
+const String mockGuardianId = 'guardian_user_1';
 
 class ImaiPayApp extends StatelessWidget {
   const ImaiPayApp({super.key});
@@ -129,7 +129,7 @@ class SeniorHomeScreen extends StatelessWidget {
               StreamBuilder<QuerySnapshot>(
                 stream: FirebaseFirestore.instance
                     .collection('transactions')
-                    .where('senderId', isEqualTo: MOCK_SENIOR_ID)
+                    .where('senderId', isEqualTo: mockSeniorId)
                     .snapshots(),
                 builder: (context, snapshot) {
                   if (!snapshot.hasData) return const SizedBox.shrink();
@@ -228,16 +228,22 @@ class SeniorHomeScreen extends StatelessWidget {
   }
 }
 
-class GuardianHomeScreen extends StatelessWidget {
+class GuardianHomeScreen extends StatefulWidget {
   const GuardianHomeScreen({super.key});
 
-  Future<void> _authenticateAndApprove(BuildContext context, String docId) async {
+  @override
+  State<GuardianHomeScreen> createState() => _GuardianHomeScreenState();
+}
+
+class _GuardianHomeScreenState extends State<GuardianHomeScreen> {
+  Future<void> _authenticateAndApprove(String docId) async {
     final LocalAuthentication auth = LocalAuthentication();
     try {
       final bool didAuthenticate = await auth.authenticate(
         localizedReason: 'Please authenticate to approve this transfer',
         biometricOnly: true,
       );
+      if (!mounted) return;
       if (didAuthenticate) {
         await FirebaseFirestore.instance
             .collection('transactions')
@@ -245,6 +251,7 @@ class GuardianHomeScreen extends StatelessWidget {
             .update({'status': 'in_escrow'});
       }
     } catch (e) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Authentication failed. Cannot approve.')),
       );
@@ -317,7 +324,7 @@ class GuardianHomeScreen extends StatelessWidget {
                           const SizedBox(width: 16),
                           Expanded(
                             child: ElevatedButton(
-                              onPressed: () => _authenticateAndApprove(context, docs[index].id),
+                              onPressed: () => _authenticateAndApprove(docs[index].id),
                               style: ElevatedButton.styleFrom(
                                 backgroundColor: Colors.green,
                                 foregroundColor: Colors.white,

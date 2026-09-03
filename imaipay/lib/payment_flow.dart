@@ -1,10 +1,10 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter_contacts/flutter_contacts.dart';
 import 'package:phone_state/phone_state.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'dart:async';
-import 'main.dart'; // To access MOCK_SENIOR_ID
+import 'main.dart'; // To access mockSeniorId
 
 class PaymentFlowScreen extends StatefulWidget {
   const PaymentFlowScreen({super.key});
@@ -34,6 +34,7 @@ class _PaymentFlowScreenState extends State<PaymentFlowScreen> {
   @override
   void dispose() {
     _phoneStateSubscription?.cancel();
+    _pageController.dispose();
     super.dispose();
   }
 
@@ -41,20 +42,64 @@ class _PaymentFlowScreenState extends State<PaymentFlowScreen> {
     final status = await Permission.contacts.request();
     if (status.isGranted) {
       final contacts = await FlutterContacts.getAll();
-      setState(() {
-        _contacts = contacts.take(10).toList(); // Limit for demo
-      });
+      if (mounted) {
+        setState(() {
+          _contacts = contacts.take(10).toList(); // Limit for demo
+        });
+      }
+    } else {
+      if (mounted) {
+        setState(() {
+          _contacts = [];
+        });
+        _showPermissionDeniedDialog();
+      }
     }
   }
 
-  void _initPhoneState() async {
+  void _showPermissionDeniedDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Contacts Permission Required'),
+        content: const Text(
+          'Contacts permission is needed to select who to send money to. Please enable contacts access in your settings to continue.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(context);
+              openAppSettings();
+            },
+            child: const Text('Open Settings'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _initPhoneState() async {
     final status = await Permission.phone.request();
     if (status.isGranted) {
       _phoneStateSubscription = PhoneState.stream.listen((event) {
-        setState(() {
-          _currentPhoneStatus = event.status;
-        });
+        if (mounted) {
+          setState(() {
+            _currentPhoneStatus = event.status;
+          });
+        }
       });
+    } else {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Phone permission is needed for Live-Call Guard.'),
+          ),
+        );
+      }
     }
   }
 
@@ -84,17 +129,73 @@ class _PaymentFlowScreenState extends State<PaymentFlowScreen> {
       flaggedReason = 'high_value';
     }
 
-    await FirebaseFirestore.instance.collection('transactions').add({
-      'senderId': MOCK_SENIOR_ID,
-      'receiverName': _selectedContactName,
-      'amount': _amount,
-      'status': status,
-      'flaggedReason': flaggedReason,
-      'createdAt': FieldValue.serverTimestamp(),
-    });
+    try {
+      await FirebaseFirestore.instance.collection('transactions').add({
+        'senderId': mockSeniorId,
+        'receiverName': _selectedContactName,
+        'amount': _amount,
+        'status': status,
+        'flaggedReason': flaggedReason,
+        'createdAt': FieldValue.serverTimestamp(),
+      });
 
-    if (mounted) {
-      Navigator.pop(context); // Go back to home
+      if (!mounted) return;
+      setState(() => _isProcessing = false);
+
+      final bool isFlagged = flaggedReason != null;
+
+      await showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (dialogContext) => AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const SizedBox(height: 16),
+              const Icon(
+                Icons.check_circle,
+                color: Colors.green,
+                size: 64,
+              ),
+              const SizedBox(height: 24),
+              Text(
+                isFlagged ? 'Sent for Guardian Review!' : 'Transfer submitted!',
+                textAlign: TextAlign.center,
+                style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 16),
+            ],
+          ),
+          actions: [
+            Center(
+              child: ElevatedButton(
+                onPressed: () {
+                  Navigator.pop(dialogContext);
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF6C63FF),
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                  padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 12),
+                ),
+                child: const Text('OK', style: TextStyle(fontSize: 18)),
+              ),
+            ),
+          ],
+        ),
+      );
+
+      if (mounted) {
+        Navigator.pop(context); // Go back to home
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isProcessing = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to submit transfer: $e')),
+        );
+      }
     }
   }
 
@@ -132,7 +233,12 @@ class _PaymentFlowScreenState extends State<PaymentFlowScreen> {
           if (_contacts == null)
             const Center(child: CircularProgressIndicator())
           else if (_contacts!.isEmpty)
-            const Text('No contacts found.')
+            const Center(
+              child: Padding(
+                padding: EdgeInsets.only(top: 32.0),
+                child: Text('No contacts found.', style: TextStyle(fontSize: 18, color: Colors.grey)),
+              ),
+            )
           else
             Expanded(
               child: ListView.separated(
@@ -140,9 +246,9 @@ class _PaymentFlowScreenState extends State<PaymentFlowScreen> {
                 separatorBuilder: (context, index) => const SizedBox(height: 16),
                 itemBuilder: (context, index) {
                   final contact = _contacts![index];
-                  final name = contact.displayName;
+                  final name = contact.displayName ?? 'Unknown';
                   return _ContactCard(
-                    name: name ?? 'Unknown',
+                    name: name,
                     isSelected: _selectedContactName == name,
                     onTap: () {
                       setState(() => _selectedContactName = name);
@@ -276,7 +382,7 @@ class _ContactCard extends StatelessWidget {
           children: [
             CircleAvatar(
               radius: 30,
-              backgroundColor: const Color(0xFF6C63FF).withOpacity(0.2),
+              backgroundColor: const Color(0xFF6C63FF).withValues(alpha: 0.2),
               child: Text(name.isNotEmpty ? name[0] : '?', style: const TextStyle(fontSize: 24, color: Color(0xFF6C63FF))),
             ),
             const SizedBox(width: 24),
