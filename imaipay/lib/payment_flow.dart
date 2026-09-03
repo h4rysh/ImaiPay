@@ -4,7 +4,12 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter_contacts/flutter_contacts.dart';
 import 'package:phone_state/phone_state.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'main.dart'; // To access mockSeniorId
+import 'package:provider/provider.dart';
+// ignore: unused_import
+import 'package:local_auth/local_auth.dart';
+import 'core/providers/auth_provider.dart';
+// ignore: unused_import
+import 'core/providers/wallet_provider.dart';
 
 class PaymentFlowScreen extends StatefulWidget {
   const PaymentFlowScreen({super.key});
@@ -15,12 +20,13 @@ class PaymentFlowScreen extends StatefulWidget {
 
 class _PaymentFlowScreenState extends State<PaymentFlowScreen> {
   final PageController _pageController = PageController();
-  
+
   List<Contact>? _contacts;
   String? _selectedContactName;
+  String? _selectedPhoneNumber;
   double? _amount;
   bool _isProcessing = false;
-  
+
   PhoneStateStatus _currentPhoneStatus = PhoneStateStatus.NOTHING;
   StreamSubscription<PhoneState>? _phoneStateSubscription;
 
@@ -38,10 +44,16 @@ class _PaymentFlowScreenState extends State<PaymentFlowScreen> {
     super.dispose();
   }
 
+  String _cleanPhoneNumber(String phone) {
+    return phone.replaceAll(RegExp(r'[\s\-\(\)]'), '');
+  }
+
   Future<void> _fetchContacts() async {
     final status = await Permission.contacts.request();
     if (status.isGranted) {
-      final contacts = await FlutterContacts.getAll();
+      final contacts = await FlutterContacts.getAll(
+        properties: {ContactProperty.name, ContactProperty.phone},
+      );
       if (mounted) {
         setState(() {
           _contacts = contacts.take(10).toList(); // Limit for demo
@@ -112,10 +124,30 @@ class _PaymentFlowScreenState extends State<PaymentFlowScreen> {
 
   bool get _isCallActive {
     return _currentPhoneStatus == PhoneStateStatus.CALL_INCOMING ||
-           _currentPhoneStatus == PhoneStateStatus.CALL_STARTED;
+        _currentPhoneStatus == PhoneStateStatus.CALL_STARTED;
   }
 
   Future<void> _submitPayment() async {
+    final authProvider = context.read<AuthProvider>();
+    if (authProvider.user == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('User is not authenticated.')),
+        );
+      }
+      return;
+    }
+    final senderUid = context.read<AuthProvider>().user!.uid;
+
+    if (_amount == null || _amount! <= 0) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Please enter a valid amount.')),
+        );
+      }
+      return;
+    }
+
     setState(() => _isProcessing = true);
 
     String status = 'in_escrow';
@@ -124,19 +156,43 @@ class _PaymentFlowScreenState extends State<PaymentFlowScreen> {
     if (_isCallActive) {
       status = 'pending_guardian';
       flaggedReason = 'active_call';
-    } else if (_amount != null && _amount! > 1000) {
+    } else if (_amount! > 1000) {
       status = 'pending_guardian';
       flaggedReason = 'high_value';
     }
 
     try {
+      // Query Firestore for the receiver's phone number if available
+      if (_selectedPhoneNumber != null && _selectedPhoneNumber!.isNotEmpty) {
+        try {
+          final querySnapshot = await FirebaseFirestore.instance
+              .collection('users')
+              .where('phoneNumber', isEqualTo: _selectedPhoneNumber)
+              .limit(1)
+              .get();
+          if (querySnapshot.docs.isNotEmpty) {
+            debugPrint('Receiver found in users collection: ${querySnapshot.docs.first.id}');
+          }
+        } catch (e) {
+          debugPrint('Receiver lookup note: $e');
+        }
+      }
+
+      // Create transaction doc with senderId, receiverName, amount, status, etc.
       await FirebaseFirestore.instance.collection('transactions').add({
-        'senderId': mockSeniorId,
-        'receiverName': _selectedContactName,
+        'senderId': senderUid,
+        'receiverName': _selectedContactName ?? 'Unknown',
+        'receiverPhoneNumber': _selectedPhoneNumber ?? '',
+        'receiverPhone': _selectedPhoneNumber ?? '',
         'amount': _amount,
         'status': status,
         'flaggedReason': flaggedReason,
         'createdAt': FieldValue.serverTimestamp(),
+      });
+
+      // Deduct the _amount from the sender's walletBalance in users collection immediately
+      await FirebaseFirestore.instance.collection('users').doc(senderUid).update({
+        'walletBalance': FieldValue.increment(-_amount!),
       });
 
       if (!mounted) return;
@@ -247,11 +303,19 @@ class _PaymentFlowScreenState extends State<PaymentFlowScreen> {
                 itemBuilder: (context, index) {
                   final contact = _contacts![index];
                   final name = contact.displayName ?? 'Unknown';
+                  final rawPhone = contact.phones.isNotEmpty ? contact.phones.first.number : '';
+                  final cleanPhone = _cleanPhoneNumber(rawPhone);
+                  final isSelected = _selectedContactName == name && _selectedPhoneNumber == cleanPhone;
+
                   return _ContactCard(
                     name: name,
-                    isSelected: _selectedContactName == name,
+                    phoneNumber: rawPhone.isNotEmpty ? rawPhone : null,
+                    isSelected: isSelected,
                     onTap: () {
-                      setState(() => _selectedContactName = name);
+                      setState(() {
+                        _selectedContactName = name;
+                        _selectedPhoneNumber = cleanPhone;
+                      });
                       _nextPage();
                     },
                   );
@@ -269,10 +333,13 @@ class _PaymentFlowScreenState extends State<PaymentFlowScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text('How much to $_selectedContactName?', style: const TextStyle(fontSize: 32, fontWeight: FontWeight.bold)),
+          Text(
+            'How much to ${_selectedContactName ?? 'recipient'}?',
+            style: const TextStyle(fontSize: 32, fontWeight: FontWeight.bold),
+          ),
           const SizedBox(height: 48),
           TextField(
-            keyboardType: TextInputType.number,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
             style: const TextStyle(fontSize: 48, fontWeight: FontWeight.bold),
             decoration: const InputDecoration(
               prefixText: '\$ ',
@@ -302,6 +369,8 @@ class _PaymentFlowScreenState extends State<PaymentFlowScreen> {
   }
 
   Widget _buildReviewScreen() {
+    final displayAmount = _amount != null ? _amount!.toStringAsFixed(2) : '0.00';
+
     return Padding(
       padding: const EdgeInsets.all(24.0),
       child: Column(
@@ -336,9 +405,13 @@ class _PaymentFlowScreenState extends State<PaymentFlowScreen> {
               ),
             ),
           const SizedBox(height: 32),
-          Text('To: $_selectedContactName', style: const TextStyle(fontSize: 24)),
+          Text('To: ${_selectedContactName ?? 'Unknown'}', style: const TextStyle(fontSize: 24)),
+          if (_selectedPhoneNumber != null && _selectedPhoneNumber!.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Text('Phone: $_selectedPhoneNumber', style: const TextStyle(fontSize: 18, color: Colors.black54)),
+          ],
           const SizedBox(height: 16),
-          Text('Amount: \$$_amount', style: const TextStyle(fontSize: 32, fontWeight: FontWeight.bold)),
+          Text('Amount: \$$displayAmount', style: const TextStyle(fontSize: 32, fontWeight: FontWeight.bold)),
           const Spacer(),
           SizedBox(
             height: 80,
@@ -349,9 +422,9 @@ class _PaymentFlowScreenState extends State<PaymentFlowScreen> {
                 foregroundColor: Colors.white,
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
               ),
-              child: _isProcessing 
-                ? const CircularProgressIndicator(color: Colors.white)
-                : Text(_isCallActive ? 'Send for Review' : 'Confirm & Send', style: const TextStyle(fontSize: 24)),
+              child: _isProcessing
+                  ? const CircularProgressIndicator(color: Colors.white)
+                  : Text(_isCallActive ? 'Send for Review' : 'Confirm & Send', style: const TextStyle(fontSize: 24)),
             ),
           ),
         ],
@@ -362,10 +435,16 @@ class _PaymentFlowScreenState extends State<PaymentFlowScreen> {
 
 class _ContactCard extends StatelessWidget {
   final String name;
+  final String? phoneNumber;
   final bool isSelected;
   final VoidCallback onTap;
 
-  const _ContactCard({required this.name, required this.isSelected, required this.onTap});
+  const _ContactCard({
+    required this.name,
+    this.phoneNumber,
+    required this.isSelected,
+    required this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -383,10 +462,32 @@ class _ContactCard extends StatelessWidget {
             CircleAvatar(
               radius: 30,
               backgroundColor: const Color(0xFF6C63FF).withValues(alpha: 0.2),
-              child: Text(name.isNotEmpty ? name[0] : '?', style: const TextStyle(fontSize: 24, color: Color(0xFF6C63FF))),
+              child: Text(
+                name.isNotEmpty ? name[0] : '?',
+                style: const TextStyle(fontSize: 24, color: Color(0xFF6C63FF)),
+              ),
             ),
             const SizedBox(width: 24),
-            Expanded(child: Text(name, style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w500), overflow: TextOverflow.ellipsis)),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    name,
+                    style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w500),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  if (phoneNumber != null && phoneNumber!.isNotEmpty) ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      phoneNumber!,
+                      style: TextStyle(fontSize: 16, color: Colors.grey[600]),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ],
+              ),
+            ),
           ],
         ),
       ),
