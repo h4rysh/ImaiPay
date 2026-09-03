@@ -5,6 +5,7 @@ import 'package:local_auth/local_auth.dart';
 import 'package:provider/provider.dart';
 import 'package:intl/intl.dart';
 import '../../core/providers/auth_provider.dart';
+import '../auth/guardian_linking_screen.dart';
 
 class GuardianDashboard extends StatefulWidget {
   const GuardianDashboard({super.key});
@@ -208,7 +209,6 @@ class _GuardianDashboardState extends State<GuardianDashboard> {
       try {
         final guardianUid = context.read<AuthProvider>().user?.uid;
         
-        // Before denying, fetch the transaction to refund the wallet
         final txDoc = await FirebaseFirestore.instance.collection('transactions').doc(docId).get();
         final txData = txDoc.data();
         if (txData != null) {
@@ -256,95 +256,221 @@ class _GuardianDashboardState extends State<GuardianDashboard> {
     }
   }
 
-  Future<void> _topUpSeniorWallet() async {
-    final currentUid = context.read<AuthProvider>().user?.uid;
-    if (currentUid == null) return;
-    
-    setState(() => _isProcessing = true);
-    try {
-      final query = await FirebaseFirestore.instance
-          .collection('users')
-          .where('linkedGuardianId', isEqualTo: currentUid)
-          .limit(1)
-          .get();
-          
-      if (query.docs.isEmpty) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('No linked senior found.'), backgroundColor: Colors.orange),
-          );
-        }
-        return;
-      }
-      
-      final seniorId = query.docs.first.id;
-      final seniorPhone = query.docs.first.data()['phoneNumber'] ?? 'Senior';
-      
-      if (!mounted) return;
-      
-      double amount = 0;
-      await showDialog(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-          title: Row(
-            children: [
-              const Icon(Icons.account_balance_wallet_rounded, color: Color(0xFF6C63FF)),
-              const SizedBox(width: 8),
-              Expanded(child: Text('Top Up $seniorPhone', style: const TextStyle(fontSize: 18))),
-            ],
-          ),
-          content: TextField(
-            keyboardType: const TextInputType.numberWithOptions(decimal: true),
-            style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
-            decoration: const InputDecoration(
-              hintText: '0.00',
-              prefixText: '\$ ',
-              border: OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(12))),
-            ),
-            onChanged: (val) => amount = double.tryParse(val) ?? 0,
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx), 
-              child: const Text('Cancel', style: TextStyle(fontSize: 16))
-            ),
-            ElevatedButton(
-              onPressed: () async {
-                if (amount > 0) {
-                  await FirebaseFirestore.instance.collection('users').doc(seniorId).update({
-                    'walletBalance': FieldValue.increment(amount),
-                  });
-                  if (ctx.mounted) {
-                    Navigator.pop(ctx);
-                  }
-                  if (mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Text('Successfully added \$${amount.toStringAsFixed(2)} to senior\'s wallet!'),
-                        backgroundColor: Colors.green,
-                      )
-                    );
-                  }
-                }
-              },
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF6C63FF),
-                foregroundColor: Colors.white,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-              ),
-              child: const Text('Top Up', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-            ),
+  Future<void> _topUpSeniorWallet(String seniorId, String seniorPhone) async {
+    double amount = 0;
+    await showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Row(
+          children: [
+            const Icon(Icons.account_balance_wallet_rounded, color: Color(0xFF4338CA)),
+            const SizedBox(width: 8),
+            Expanded(child: Text('Top Up $seniorPhone', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold))),
           ],
         ),
-      );
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to top up: $e'), backgroundColor: Colors.red));
-      }
-    } finally {
-      if (mounted) setState(() => _isProcessing = false);
-    }
+        content: TextField(
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+          decoration: const InputDecoration(
+            hintText: '0.00',
+            prefixText: '\$ ',
+            border: OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(12))),
+          ),
+          onChanged: (val) => amount = double.tryParse(val) ?? 0,
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx), 
+            child: const Text('Cancel', style: TextStyle(fontSize: 16)),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              if (amount > 0) {
+                await FirebaseFirestore.instance.collection('users').doc(seniorId).update({
+                  'walletBalance': FieldValue.increment(amount),
+                });
+                if (ctx.mounted) {
+                  Navigator.pop(ctx);
+                }
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text('Successfully added \$${amount.toStringAsFixed(2)} to senior\'s wallet!'),
+                      backgroundColor: Colors.green,
+                    ),
+                  );
+                }
+              }
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF4338CA),
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            ),
+            child: const Text('Top Up', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showManageContactsDialog(BuildContext context, String seniorId, List<String> currentContacts) {
+    final phoneController = TextEditingController();
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          return AlertDialog(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+            title: const Row(
+              children: [
+                Icon(Icons.verified_user_rounded, color: Color(0xFF4338CA)),
+                SizedBox(width: 8),
+                Text('Trusted Contacts', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 20)),
+              ],
+            ),
+            content: SizedBox(
+              width: double.maxFinite,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const Text(
+                    'Transfers to trusted numbers bypass fraud warnings and do not require guardian review.',
+                    style: TextStyle(fontSize: 14, color: Colors.black54),
+                  ),
+                  const SizedBox(height: 16),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: phoneController,
+                          keyboardType: TextInputType.phone,
+                          decoration: const InputDecoration(
+                            hintText: '+91 98765 43210',
+                            labelText: 'Add Phone Number',
+                            border: OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(12))),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      IconButton.filled(
+                        onPressed: () async {
+                          final phone = phoneController.text.trim().replaceAll(' ', '');
+                          if (phone.isNotEmpty) {
+                            await context.read<AuthProvider>().addTrustedContact(seniorId, phone);
+                            phoneController.clear();
+                            setDialogState(() {
+                              currentContacts.add(phone);
+                            });
+                          }
+                        },
+                        icon: const Icon(Icons.add),
+                        style: IconButton.styleFrom(backgroundColor: const Color(0xFF4338CA)),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  if (currentContacts.isEmpty)
+                    const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 16),
+                      child: Text('No trusted contacts added yet.', textAlign: TextAlign.center, style: TextStyle(color: Colors.grey)),
+                    )
+                  else
+                    SizedBox(
+                      height: 160,
+                      child: ListView.separated(
+                        shrinkWrap: true,
+                        itemCount: currentContacts.length,
+                        separatorBuilder: (_, _) => const Divider(height: 1),
+                        itemBuilder: (context, index) {
+                          final contact = currentContacts[index];
+                          return ListTile(
+                            dense: true,
+                            contentPadding: EdgeInsets.zero,
+                            leading: const Icon(Icons.check_circle, color: Colors.green, size: 20),
+                            title: Text(contact, style: const TextStyle(fontWeight: FontWeight.bold)),
+                            trailing: IconButton(
+                              icon: const Icon(Icons.delete_outline, color: Colors.red, size: 20),
+                              onPressed: () async {
+                                await context.read<AuthProvider>().removeTrustedContact(seniorId, contact);
+                                setDialogState(() {
+                                  currentContacts.removeAt(index);
+                                });
+                              },
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('Done', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  void _showEscrowDelayDialog(BuildContext context, String seniorId, int currentDelay) {
+    int selected = currentDelay;
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          return AlertDialog(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+            title: const Text('Configure Escrow Hold', style: TextStyle(fontWeight: FontWeight.bold)),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('Set how long transfers are held before final settlement so the Senior can cancel if scammed:'),
+                const SizedBox(height: 16),
+                DropdownButtonFormField<int>(
+                  initialValue: [5, 15, 30, 60, 1440].contains(selected) ? selected : 5,
+                  decoration: const InputDecoration(border: OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(12)))),
+                  items: const [
+                    DropdownMenuItem(value: 5, child: Text('5 minutes (Quick)')),
+                    DropdownMenuItem(value: 15, child: Text('15 minutes')),
+                    DropdownMenuItem(value: 30, child: Text('30 minutes')),
+                    DropdownMenuItem(value: 60, child: Text('1 hour (Recommended)')),
+                    DropdownMenuItem(value: 1440, child: Text('24 hours (Maximum Safety)')),
+                  ],
+                  onChanged: (val) {
+                    if (val != null) {
+                      setDialogState(() => selected = val);
+                    }
+                  },
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+              ElevatedButton(
+                onPressed: () async {
+                  final messenger = ScaffoldMessenger.of(context);
+                  await context.read<AuthProvider>().updateEscrowDelay(seniorId, selected);
+                  if (ctx.mounted) Navigator.pop(ctx);
+                  messenger.showSnackBar(
+                    SnackBar(content: Text('Escrow delay set to $selected minutes.'), backgroundColor: Colors.green),
+                  );
+                },
+                style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF4338CA), foregroundColor: Colors.white),
+                child: const Text('Save'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
   }
 
   @override
@@ -356,7 +482,7 @@ class _GuardianDashboardState extends State<GuardianDashboard> {
       backgroundColor: const Color(0xFFF8FAFC),
       appBar: AppBar(
         title: const Text(
-          'Guardian Dashboard',
+          'Guardian Control Center',
           style: TextStyle(
             fontWeight: FontWeight.bold,
             fontSize: 22,
@@ -368,6 +494,16 @@ class _GuardianDashboardState extends State<GuardianDashboard> {
         centerTitle: false,
         actions: [
           IconButton(
+            icon: const Icon(Icons.person_add_alt_1_rounded, color: Color(0xFF4338CA)),
+            tooltip: 'Link Another Senior',
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (context) => const GuardianLinkingScreen()),
+              );
+            },
+          ),
+          IconButton(
             icon: const Icon(Icons.logout_rounded, color: Color(0xFF64748B)),
             tooltip: 'Logout',
             onPressed: () => context.read<AuthProvider>().signOut(),
@@ -376,22 +512,28 @@ class _GuardianDashboardState extends State<GuardianDashboard> {
         ],
       ),
       body: StreamBuilder<QuerySnapshot>(
-        stream: currentUid.isEmpty ? null : FirebaseFirestore.instance
-            .collection('transactions')
-            .where('guardianId', isEqualTo: currentUid)
-            .where('status', isEqualTo: 'flagged')
-            .snapshots(),
-        builder: (context, snapshot) {
-          if (!snapshot.hasData && snapshot.connectionState == ConnectionState.waiting) {
-            return const Center(child: CircularProgressIndicator());
-          }
-
-          final docs = snapshot.data?.docs ?? [];
+        stream: currentUid.isEmpty
+            ? null
+            : FirebaseFirestore.instance
+                .collection('users')
+                .where('linkedGuardianId', isEqualTo: currentUid)
+                .snapshots(),
+        builder: (context, seniorSnapshot) {
+          final seniorDocs = seniorSnapshot.data?.docs ?? [];
+          final Map<String, dynamic>? seniorData =
+              seniorDocs.isNotEmpty ? (seniorDocs.first.data() as Map<String, dynamic>) : null;
+          final String seniorId = seniorDocs.isNotEmpty ? seniorDocs.first.id : '';
+          final String seniorPhone = seniorData?['phoneNumber'] ?? 'Senior';
+          final double seniorBalance =
+              (seniorData?['walletBalance'] is num) ? (seniorData!['walletBalance'] as num).toDouble() : 0.0;
+          final int escrowDelay = seniorData?['escrowDelayMinutes'] ?? 5;
+          final List<String> trustedContacts =
+              List<String>.from(seniorData?['trustedContacts'] ?? []);
 
           return ListView(
             padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 20),
             children: [
-              // Guardian Shield Hero Banner
+              // Monitored Senior Profile & Wallet Card
               Container(
                 decoration: BoxDecoration(
                   gradient: const LinearGradient(
@@ -408,398 +550,461 @@ class _GuardianDashboardState extends State<GuardianDashboard> {
                     ),
                   ],
                 ),
-                padding: const EdgeInsets.all(22),
-                child: Row(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Container(
-                      padding: const EdgeInsets.all(14),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF10B981).withValues(alpha: 0.2),
-                        shape: BoxShape.circle,
-                        border: Border.all(
-                          color: const Color(0xFF10B981).withValues(alpha: 0.4),
-                          width: 2,
-                        ),
-                      ),
-                      child: const Icon(
-                        Icons.shield_rounded,
-                        color: Color(0xFF10B981),
-                        size: 32,
-                      ),
-                    ),
-                    const SizedBox(width: 16),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text(
-                            'Guardian Protection Active',
-                            style: TextStyle(
-                              fontSize: 18,
-                              fontWeight: FontWeight.bold,
-                              color: Colors.white,
+                    Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF10B981).withValues(alpha: 0.2),
+                            shape: BoxShape.circle,
+                            border: Border.all(
+                              color: const Color(0xFF10B981).withValues(alpha: 0.4),
+                              width: 2,
                             ),
                           ),
-                          const SizedBox(height: 4),
-                          Text(
-                            currentUid.isNotEmpty
-                                ? 'Monitoring transfers for suspicious behavior'
-                                : 'Protecting senior transfers',
-                            style: TextStyle(
-                              fontSize: 13,
-                              color: Colors.grey.shade400,
+                          child: const Icon(
+                            Icons.verified_user_rounded,
+                            color: Color(0xFF10B981),
+                            size: 28,
+                          ),
+                        ),
+                        const SizedBox(width: 14),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                seniorDocs.isNotEmpty ? 'Monitoring $seniorPhone' : 'No Senior Linked',
+                                style: const TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.white,
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                seniorDocs.isNotEmpty
+                                    ? 'Active Protection • $escrowDelay min Escrow'
+                                    : 'Tap + above to pair a senior account',
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  color: Colors.grey.shade400,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                    if (seniorDocs.isNotEmpty) ...[
+                      const SizedBox(height: 20),
+                      const Divider(color: Colors.white24),
+                      const SizedBox(height: 12),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Senior Balance',
+                                style: TextStyle(fontSize: 13, color: Colors.grey.shade400),
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                currencyFormatter.format(seniorBalance),
+                                style: const TextStyle(
+                                  fontSize: 32,
+                                  fontWeight: FontWeight.w800,
+                                  color: Colors.white,
+                                ),
+                              ),
+                            ],
+                          ),
+                          ElevatedButton.icon(
+                            onPressed: () => _topUpSeniorWallet(seniorId, seniorPhone),
+                            icon: const Icon(Icons.add_rounded, size: 20),
+                            label: const Text('Top Up'),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: const Color(0xFF4338CA),
+                              foregroundColor: Colors.white,
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                             ),
                           ),
                         ],
                       ),
-                    ),
+                      const SizedBox(height: 16),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: OutlinedButton.icon(
+                              onPressed: () => _showManageContactsDialog(context, seniorId, trustedContacts),
+                              icon: const Icon(Icons.people_outline, size: 18),
+                              label: Text('Safe Contacts (${trustedContacts.length})'),
+                              style: OutlinedButton.styleFrom(
+                                foregroundColor: Colors.white,
+                                side: const BorderSide(color: Colors.white38),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: OutlinedButton.icon(
+                              onPressed: () => _showEscrowDelayDialog(context, seniorId, escrowDelay),
+                              icon: const Icon(Icons.timer_outlined, size: 18),
+                              label: const Text('Escrow Delay'),
+                              style: OutlinedButton.styleFrom(
+                                foregroundColor: Colors.white,
+                                side: const BorderSide(color: Colors.white38),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
                   ],
-                ),
-              ),
-
-              const SizedBox(height: 20),
-              
-              // Top Up Button
-              ElevatedButton.icon(
-                onPressed: _isProcessing ? null : _topUpSeniorWallet,
-                icon: const Icon(Icons.account_balance_wallet_rounded, size: 24),
-                label: const Text('Top Up Senior\'s Wallet', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF6C63FF),
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(vertical: 20),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-                  elevation: 2,
                 ),
               ),
 
               const SizedBox(height: 28),
 
-              // Section Header with count badge
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Row(
+              // Flagged Approvals Section Header
+              StreamBuilder<QuerySnapshot>(
+                stream: currentUid.isEmpty
+                    ? null
+                    : FirebaseFirestore.instance
+                        .collection('transactions')
+                        .where('guardianId', isEqualTo: currentUid)
+                        .where('status', isEqualTo: 'flagged')
+                        .snapshots(),
+                builder: (context, flaggedSnapshot) {
+                  final flaggedDocs = flaggedSnapshot.data?.docs ?? [];
+
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Text(
-                        'Pending Approvals',
-                        style: TextStyle(
-                          fontSize: 20,
-                          fontWeight: FontWeight.bold,
-                          color: Color(0xFF0F172A),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
-                        decoration: BoxDecoration(
-                          color: docs.isNotEmpty
-                              ? const Color(0xFFEF4444)
-                              : const Color(0xFF10B981),
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: Text(
-                          docs.length.toString(),
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 13,
-                            fontWeight: FontWeight.bold,
+                      Row(
+                        children: [
+                          const Text(
+                            'Pending Approvals',
+                            style: TextStyle(
+                              fontSize: 22,
+                              fontWeight: FontWeight.bold,
+                              color: Color(0xFF0F172A),
+                            ),
                           ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-              const SizedBox(height: 16),
-
-              // Empty State
-              if (docs.isEmpty)
-                Card(
-                  elevation: 0,
-                  color: Colors.white,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(20),
-                    side: BorderSide(color: Colors.grey.shade200),
-                  ),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 24,
-                      vertical: 40,
-                    ),
-                    child: Column(
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.all(20),
-                          decoration: const BoxDecoration(
-                            color: Color(0xFFECFDF5),
-                            shape: BoxShape.circle,
-                          ),
-                          child: const Icon(
-                            Icons.verified_user_rounded,
-                            size: 48,
-                            color: Color(0xFF10B981),
-                          ),
-                        ),
-                        const SizedBox(height: 20),
-                        const Text(
-                          'All Caught Up!',
-                          style: TextStyle(
-                            fontSize: 20,
-                            fontWeight: FontWeight.bold,
-                            color: Color(0xFF0F172A),
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          'No pending transfers require your review right now. Flagged transfers will appear here immediately.',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(
-                            fontSize: 14,
-                            color: Colors.grey.shade600,
-                            height: 1.4,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                )
-              else
-                Column(
-                  children: docs.map((doc) {
-                    final txData = doc.data() as Map<String, dynamic>;
-                    final amount = (txData['amount'] is num)
-                        ? (txData['amount'] as num).toDouble()
-                        : 0.0;
-                    final receiverName =
-                        txData['receiverName']?.toString() ?? 'Recipient';
-                    final flaggedReason = txData['flaggedReason']?.toString();
-                    final isActiveCall = flaggedReason == 'active_call';
-                    final isUntrusted = flaggedReason == 'untrusted_contact';
-                    final isHighValue = flaggedReason == 'high_value';
-                    final createdAt = (txData['createdAt'] as Timestamp?)?.toDate();
-                    final dateStr = createdAt != null
-                        ? DateFormat('MMM d, yyyy • h:mm a').format(createdAt)
-                        : 'Just now';
-                        
-                    String warningMsg = 'Suspicious Transfer Detected';
-                    IconData warningIcon = Icons.warning_amber_rounded;
-                    
-                    if (isActiveCall) {
-                      warningMsg = 'FLAGGED: Active Phone Call Detected';
-                      warningIcon = Icons.phone_in_talk_rounded;
-                    } else if (isUntrusted) {
-                      warningMsg = 'FLAGGED: Untrusted Contact';
-                      warningIcon = Icons.person_off_rounded;
-                    } else if (isHighValue) {
-                      warningMsg = 'FLAGGED: High Value Transfer';
-                    }
-
-                    return Container(
-                      margin: const EdgeInsets.only(bottom: 18),
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(24),
-                        border: Border.all(
-                          color: isActiveCall || isUntrusted
-                              ? const Color(0xFFFCA5A5)
-                              : const Color(0xFFFDE68A),
-                          width: 1.5,
-                        ),
-                        boxShadow: [
-                          BoxShadow(
-                            color: (isActiveCall || isUntrusted
-                                    ? Colors.red
-                                    : Colors.orange)
-                                .withValues(alpha: 0.08),
-                            blurRadius: 16,
-                            offset: const Offset(0, 6),
+                          const SizedBox(width: 8),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: flaggedDocs.isNotEmpty
+                                  ? const Color(0xFFEF4444)
+                                  : const Color(0xFF10B981),
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: Text(
+                              flaggedDocs.length.toString(),
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 13,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
                           ),
                         ],
                       ),
-                      child: Padding(
-                        padding: const EdgeInsets.all(22.0),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            // Flagged Warning Banner
-                            Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 12,
-                                vertical: 8,
-                              ),
-                              decoration: BoxDecoration(
-                                color: isActiveCall || isUntrusted
-                                    ? const Color(0xFFFEF2F2)
-                                    : const Color(0xFFFFFBEB),
-                                borderRadius: BorderRadius.circular(14),
-                              ),
-                              child: Row(
-                                children: [
-                                  Icon(
-                                    warningIcon,
-                                    size: 20,
-                                    color: isActiveCall || isUntrusted
-                                        ? const Color(0xFFDC2626)
-                                        : const Color(0xFFD97706),
-                                  ),
-                                  const SizedBox(width: 8),
-                                  Expanded(
-                                    child: Text(
-                                      warningMsg,
-                                      style: TextStyle(
-                                        fontSize: 13,
-                                        fontWeight: FontWeight.bold,
-                                        color: isActiveCall || isUntrusted
-                                            ? const Color(0xFFDC2626)
-                                            : const Color(0xFFD97706),
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                            const SizedBox(height: 18),
+                      const SizedBox(height: 16),
 
-                            // Transfer Details
-                            Row(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      if (flaggedDocs.isEmpty)
+                        Card(
+                          elevation: 0,
+                          color: Colors.white,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(20),
+                            side: BorderSide(color: Colors.grey.shade200),
+                          ),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
+                            child: Column(
                               children: [
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        'Attempted transfer to',
-                                        style: TextStyle(
-                                          fontSize: 13,
-                                          color: Colors.grey.shade600,
-                                        ),
-                                      ),
-                                      const SizedBox(height: 2),
-                                      Text(
-                                        receiverName,
-                                        style: const TextStyle(
-                                          fontSize: 22,
-                                          fontWeight: FontWeight.bold,
-                                          color: Color(0xFF0F172A),
-                                        ),
-                                      ),
-                                      const SizedBox(height: 4),
-                                      Text(
-                                        dateStr,
-                                        style: TextStyle(
-                                          fontSize: 12,
-                                          color: Colors.grey.shade500,
-                                        ),
-                                      ),
-                                    ],
+                                Container(
+                                  padding: const EdgeInsets.all(16),
+                                  decoration: const BoxDecoration(
+                                    color: Color(0xFFECFDF5),
+                                    shape: BoxShape.circle,
+                                  ),
+                                  child: const Icon(
+                                    Icons.verified_user_rounded,
+                                    size: 40,
+                                    color: Color(0xFF10B981),
                                   ),
                                 ),
-                                Text(
-                                  currencyFormatter.format(amount),
-                                  style: const TextStyle(
-                                    fontSize: 26,
-                                    fontWeight: FontWeight.w800,
+                                const SizedBox(height: 16),
+                                const Text(
+                                  'All Caught Up!',
+                                  style: TextStyle(
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.bold,
                                     color: Color(0xFF0F172A),
+                                  ),
+                                ),
+                                const SizedBox(height: 6),
+                                Text(
+                                  'No flagged transfers require review right now.',
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(
+                                    fontSize: 14,
+                                    color: Colors.grey.shade600,
                                   ),
                                 ),
                               ],
                             ),
+                          ),
+                        )
+                      else
+                        Column(
+                          children: flaggedDocs.map((doc) {
+                            final txData = doc.data() as Map<String, dynamic>;
+                            final amount = (txData['amount'] is num)
+                                ? (txData['amount'] as num).toDouble()
+                                : 0.0;
+                            final receiverName = txData['receiverName']?.toString() ?? 'Recipient';
+                            final flaggedReason = txData['flaggedReason']?.toString();
+                            final isActiveCall = flaggedReason == 'active_call';
+                            final isUntrusted = flaggedReason == 'untrusted_contact';
+                            final createdAt = (txData['createdAt'] as Timestamp?)?.toDate();
+                            final dateStr = createdAt != null
+                                ? DateFormat('MMM d, yyyy • h:mm a').format(createdAt)
+                                : 'Just now';
 
-                            const SizedBox(height: 14),
-                            // Advisory notice
-                            Text(
-                              isActiveCall
-                                  ? 'The user attempted this payment while currently speaking on the phone. Scammers frequently keep seniors on the phone to rush them into fraudulent payments.'
-                                  : isUntrusted 
-                                    ? 'This transfer is to someone not in the trusted contacts list.' 
-                                    : 'This transfer amount exceeds the normal threshold. Please verify before approving.',
-                              style: TextStyle(
-                                fontSize: 13,
-                                color: Colors.grey.shade700,
-                                height: 1.4,
+                            String warningMsg = 'FLAGGED: Suspicious Activity';
+                            IconData warningIcon = Icons.warning_amber_rounded;
+                            if (isActiveCall) {
+                              warningMsg = 'FLAGGED: Active Phone Call Detected';
+                              warningIcon = Icons.phone_in_talk_rounded;
+                            } else if (isUntrusted) {
+                              warningMsg = 'FLAGGED: Untrusted Contact';
+                              warningIcon = Icons.person_off_rounded;
+                            }
+
+                            return Container(
+                              margin: const EdgeInsets.only(bottom: 16),
+                              padding: const EdgeInsets.all(20),
+                              decoration: BoxDecoration(
+                                color: Colors.white,
+                                borderRadius: BorderRadius.circular(20),
+                                border: Border.all(color: const Color(0xFFFCA5A5), width: 1.5),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: Colors.red.withValues(alpha: 0.06),
+                                    blurRadius: 12,
+                                    offset: const Offset(0, 4),
+                                  ),
+                                ],
                               ),
-                            ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    children: [
+                                      Icon(warningIcon, color: Colors.red, size: 20),
+                                      const SizedBox(width: 8),
+                                      Expanded(
+                                        child: Text(
+                                          warningMsg,
+                                          style: const TextStyle(
+                                            color: Colors.red,
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 14,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 12),
+                                  Row(
+                                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                    children: [
+                                      Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          Text(
+                                            receiverName,
+                                            style: const TextStyle(
+                                              fontSize: 22,
+                                              fontWeight: FontWeight.bold,
+                                              color: Color(0xFF0F172A),
+                                            ),
+                                          ),
+                                          Text(
+                                            dateStr,
+                                            style: TextStyle(fontSize: 13, color: Colors.grey.shade500),
+                                          ),
+                                        ],
+                                      ),
+                                      Text(
+                                        currencyFormatter.format(amount),
+                                        style: const TextStyle(
+                                          fontSize: 24,
+                                          fontWeight: FontWeight.w800,
+                                          color: Color(0xFF0F172A),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 16),
+                                  Row(
+                                    children: [
+                                      Expanded(
+                                        child: OutlinedButton(
+                                          onPressed: _isProcessing
+                                              ? null
+                                              : () => _denyTransfer(doc.id, receiverName, amount),
+                                          style: OutlinedButton.styleFrom(
+                                            foregroundColor: Colors.red,
+                                            side: const BorderSide(color: Colors.red),
+                                            padding: const EdgeInsets.symmetric(vertical: 14),
+                                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                                          ),
+                                          child: const Text('Block & Refund', style: TextStyle(fontWeight: FontWeight.bold)),
+                                        ),
+                                      ),
+                                      const SizedBox(width: 12),
+                                      Expanded(
+                                        child: ElevatedButton(
+                                          onPressed: _isProcessing
+                                              ? null
+                                              : () => _authenticateAndApprove(doc.id),
+                                          style: ElevatedButton.styleFrom(
+                                            backgroundColor: const Color(0xFF16A34A),
+                                            foregroundColor: Colors.white,
+                                            padding: const EdgeInsets.symmetric(vertical: 14),
+                                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                                          ),
+                                          child: const Text('Approve', style: TextStyle(fontWeight: FontWeight.bold)),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ],
+                              ),
+                            );
+                          }).toList(),
+                        ),
+                    ],
+                  );
+                },
+              ),
 
-                            const SizedBox(height: 22),
-                            // Action Buttons: Deny & Approve
+              const SizedBox(height: 32),
+
+              // Audit History Log
+              const Text(
+                'Activity & Audit History',
+                style: TextStyle(
+                  fontSize: 22,
+                  fontWeight: FontWeight.bold,
+                  color: Color(0xFF0F172A),
+                ),
+              ),
+              const SizedBox(height: 16),
+
+              StreamBuilder<QuerySnapshot>(
+                stream: currentUid.isEmpty
+                    ? null
+                    : FirebaseFirestore.instance
+                        .collection('transactions')
+                        .where('guardianId', isEqualTo: currentUid)
+                        .where('status', whereIn: ['completed', 'cancelled', 'pending'])
+                        .snapshots(),
+                builder: (context, auditSnapshot) {
+                  final auditDocs = auditSnapshot.data?.docs ?? [];
+
+                  if (auditDocs.isEmpty) {
+                    return Container(
+                      padding: const EdgeInsets.all(24),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(color: Colors.grey.shade200),
+                      ),
+                      child: const Center(
+                        child: Text(
+                          'No audit transactions recorded yet.',
+                          style: TextStyle(color: Colors.grey, fontSize: 16),
+                        ),
+                      ),
+                    );
+                  }
+
+                  return Column(
+                    children: auditDocs.map((doc) {
+                      final data = doc.data() as Map<String, dynamic>;
+                      final amount = (data['amount'] is num) ? (data['amount'] as num).toDouble() : 0.0;
+                      final receiver = data['receiverName'] ?? 'Recipient';
+                      final status = data['status'] ?? 'unknown';
+                      final createdAt = (data['createdAt'] as Timestamp?)?.toDate();
+                      final dateStr = createdAt != null ? DateFormat('MMM d, h:mm a').format(createdAt) : '';
+
+                      Color chipColor = Colors.grey;
+                      if (status == 'completed') chipColor = Colors.green;
+                      if (status == 'cancelled') chipColor = Colors.red;
+                      if (status == 'pending') chipColor = Colors.orange;
+
+                      return Container(
+                        margin: const EdgeInsets.only(bottom: 12),
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(16),
+                          border: Border.all(color: Colors.grey.shade200),
+                        ),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(receiver, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                                const SizedBox(height: 2),
+                                Text(dateStr, style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
+                              ],
+                            ),
                             Row(
                               children: [
-                                Expanded(
-                                  child: OutlinedButton.icon(
-                                    onPressed: _isProcessing
-                                        ? null
-                                        : () => _denyTransfer(
-                                              doc.id,
-                                              receiverName,
-                                              amount,
-                                            ),
-                                    icon: const Icon(
-                                      Icons.close_rounded,
-                                      size: 20,
-                                    ),
-                                    label: const Text(
-                                      'Deny',
-                                      style: TextStyle(
-                                        fontSize: 16,
-                                        fontWeight: FontWeight.bold,
-                                      ),
-                                    ),
-                                    style: OutlinedButton.styleFrom(
-                                      foregroundColor: const Color(0xFFDC2626),
-                                      side: const BorderSide(
-                                        color: Color(0xFFFCA5A5),
-                                        width: 1.5,
-                                      ),
-                                      padding: const EdgeInsets.symmetric(
-                                        vertical: 16,
-                                      ),
-                                      shape: RoundedRectangleBorder(
-                                        borderRadius: BorderRadius.circular(16),
-                                      ),
-                                    ),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                  decoration: BoxDecoration(
+                                    color: chipColor.withValues(alpha: 0.1),
+                                    borderRadius: BorderRadius.circular(10),
+                                  ),
+                                  child: Text(
+                                    status,
+                                    style: TextStyle(color: chipColor, fontWeight: FontWeight.bold, fontSize: 12),
                                   ),
                                 ),
-                                const SizedBox(width: 14),
-                                Expanded(
-                                  child: ElevatedButton.icon(
-                                    onPressed: _isProcessing
-                                        ? null
-                                        : () => _authenticateAndApprove(doc.id),
-                                    icon: const Icon(
-                                      Icons.fingerprint_rounded,
-                                      size: 22,
-                                    ),
-                                    label: const Text(
-                                      'Approve',
-                                      style: TextStyle(
-                                        fontSize: 16,
-                                        fontWeight: FontWeight.bold,
-                                      ),
-                                    ),
-                                    style: ElevatedButton.styleFrom(
-                                      backgroundColor: const Color(0xFF16A34A),
-                                      foregroundColor: Colors.white,
-                                      padding: const EdgeInsets.symmetric(
-                                        vertical: 16,
-                                      ),
-                                      shape: RoundedRectangleBorder(
-                                        borderRadius: BorderRadius.circular(16),
-                                      ),
-                                      elevation: 2,
-                                    ),
-                                  ),
+                                const SizedBox(width: 12),
+                                Text(
+                                  currencyFormatter.format(amount),
+                                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
                                 ),
                               ],
                             ),
                           ],
                         ),
-                      ),
-                    );
-                  }).toList(),
-                ),
+                      );
+                    }).toList(),
+                  );
+                },
+              ),
+              const SizedBox(height: 32),
             ],
           );
         },

@@ -10,6 +10,272 @@ import '../../payment_flow.dart';
 class SeniorDashboard extends StatelessWidget {
   const SeniorDashboard({super.key});
 
+  void _showPairingCodeDialog(BuildContext context, AuthProvider authProvider, UserProfile? profile) async {
+    String code = profile?.linkingCode ?? '';
+    if (code.isEmpty) {
+      code = await authProvider.generateLinkingCode();
+    }
+
+    if (!context.mounted) return;
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        title: const Row(
+          children: [
+            Icon(Icons.link_rounded, color: Color(0xFF4338CA), size: 32),
+            SizedBox(width: 12),
+            Text('Pair with Caretaker', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 24)),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              'Show this 6-digit code to your Caretaker to enter on their phone:',
+              style: TextStyle(fontSize: 18, color: Colors.black87),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 24),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+              decoration: BoxDecoration(
+                color: const Color(0xFFEEF2FF),
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(color: const Color(0xFF6366F1), width: 2),
+              ),
+              child: Text(
+                code,
+                style: const TextStyle(
+                  fontSize: 44,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 8,
+                  color: Color(0xFF4338CA),
+                ),
+              ),
+            ),
+            const SizedBox(height: 20),
+            const Text(
+              'Once entered on their phone, your accounts will be securely linked.',
+              style: TextStyle(fontSize: 16, color: Colors.black54),
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
+        actions: [
+          Center(
+            child: ElevatedButton(
+              onPressed: () => Navigator.pop(ctx),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF4338CA),
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 14),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              ),
+              child: const Text('Done', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showSafetyTipsBottomSheet(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(32)),
+      ),
+      builder: (ctx) => DraggableScrollableSheet(
+        initialChildSize: 0.7,
+        maxChildSize: 0.9,
+        minChildSize: 0.5,
+        expand: false,
+        builder: (_, scrollController) => ListView(
+          controller: scrollController,
+          padding: const EdgeInsets.all(24.0),
+          children: [
+            Center(
+              child: Container(
+                width: 50,
+                height: 5,
+                decoration: BoxDecoration(
+                  color: Colors.grey.shade300,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+              ),
+            ),
+            const SizedBox(height: 20),
+            const Row(
+              children: [
+                Icon(Icons.shield_outlined, color: Color(0xFF4338CA), size: 36),
+                SizedBox(width: 12),
+                Text(
+                  'Safety & Scam Tips',
+                  style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'Keep your money safe with these essential rules:',
+              style: TextStyle(fontSize: 18, color: Colors.black54),
+            ),
+            const SizedBox(height: 24),
+            _buildTipCard(
+              icon: Icons.people_outline,
+              iconColor: const Color(0xFFEA580C),
+              title: 'The Grandparent Scam',
+              description:
+                  'A caller pretends to be your grandchild in urgent distress needing money. Always hang up and call them directly on their known phone number.',
+            ),
+            const SizedBox(height: 16),
+            _buildTipCard(
+              icon: Icons.account_balance_outlined,
+              iconColor: const Color(0xFFDC2626),
+              title: 'Fake Government & IRS Calls',
+              description:
+                  'Scammers claim you owe back-taxes and threaten police action. Legitimate authorities will NEVER demand immediate payment over the phone.',
+            ),
+            const SizedBox(height: 16),
+            _buildTipCard(
+              icon: Icons.computer_outlined,
+              iconColor: const Color(0xFF2563EB),
+              title: 'Tech Support Scam',
+              description:
+                  'Popups or callers claiming your device is infected. Never give anyone remote access to your phone or computer, and never transfer money.',
+            ),
+            const SizedBox(height: 20),
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: const Color(0xFFF1F5F9),
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: const Row(
+                children: [
+                  Icon(Icons.info_outline, color: Color(0xFF4338CA), size: 28),
+                  SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      'Remember: With ImaiPay, your money is held in escrow so you can cancel accidental or pressured transfers anytime.',
+                      style: TextStyle(fontSize: 16, color: Color(0xFF0F172A), fontWeight: FontWeight.w500),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 20),
+          ],
+        ),
+      ),
+    );
+  }
+
+  static Widget _buildTipCard({
+    required IconData icon,
+    required Color iconColor,
+    required String title,
+    required String description,
+  }) {
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF8FAFC),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: Colors.grey.shade200, width: 1.5),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: iconColor.withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(16),
+            ),
+            child: Icon(icon, color: iconColor, size: 32),
+          ),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  description,
+                  style: const TextStyle(fontSize: 16, color: Colors.black87, height: 1.4),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showSettingsDialog(BuildContext context, AuthProvider authProvider, UserProfile? profile) {
+    final hasGuardian = profile?.linkedGuardianId != null && profile!.linkedGuardianId!.isNotEmpty;
+    final escrowMinutes = profile?.escrowDelayMinutes ?? 5;
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        title: const Text('Account Settings', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 24)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.timer_outlined, color: Color(0xFF4338CA), size: 28),
+              title: const Text('Escrow Delay', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+              subtitle: Text('$escrowMinutes minutes to cancel transfers', style: const TextStyle(fontSize: 15)),
+            ),
+            const Divider(),
+            if (hasGuardian) ...[
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.link_off, color: Colors.red, size: 28),
+                title: const Text('Unlink Caretaker', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18, color: Colors.red)),
+                subtitle: const Text('Disconnect from your guardian', style: TextStyle(fontSize: 15)),
+                onTap: () async {
+                  Navigator.pop(ctx);
+                  await authProvider.unlinkSelfFromGuardian();
+                },
+              ),
+              const Divider(),
+            ],
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.logout, color: Colors.black87, size: 28),
+              title: const Text('Sign Out', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+              subtitle: const Text('Log out of this phone', style: TextStyle(fontSize: 15)),
+              onTap: () {
+                Navigator.pop(ctx);
+                authProvider.signOut();
+              },
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Close', style: TextStyle(fontSize: 18)),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final authProvider = context.watch<AuthProvider>();
@@ -24,13 +290,37 @@ class SeniorDashboard extends StatelessWidget {
           'ImaiPay',
           style: TextStyle(
             fontWeight: FontWeight.bold,
-            fontSize: 32, // Massive typography
+            fontSize: 32,
             color: Color(0xFF0F172A),
           ),
         ),
         backgroundColor: Colors.white,
         elevation: 0,
         centerTitle: false,
+        actions: [
+          StreamBuilder<UserProfile?>(
+            stream: uid.isNotEmpty ? walletProvider.streamProfile(uid) : const Stream.empty(),
+            builder: (context, snapshot) {
+              return IconButton(
+                icon: const Icon(Icons.settings_outlined, size: 30, color: Color(0xFF0F172A)),
+                tooltip: 'Settings',
+                onPressed: () => _showSettingsDialog(context, authProvider, snapshot.data),
+              );
+            },
+          ),
+          const SizedBox(width: 8),
+        ],
+      ),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: () => _showSafetyTipsBottomSheet(context),
+        backgroundColor: const Color(0xFF0F172A),
+        foregroundColor: Colors.white,
+        elevation: 6,
+        icon: const Icon(Icons.lightbulb_rounded, size: 28, color: Color(0xFFFBBF24)),
+        label: const Text(
+          'Safety & Scam Tips',
+          style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+        ),
       ),
       body: StreamBuilder<UserProfile?>(
         stream: uid.isNotEmpty
@@ -41,6 +331,7 @@ class SeniorDashboard extends StatelessWidget {
           final balance = profile?.walletBalance ?? 0.0;
           final formattedBalance = currencyFormatter.format(balance);
           final escrowDelayMinutes = profile?.escrowDelayMinutes ?? 5;
+          final hasGuardian = profile?.linkedGuardianId != null && profile!.linkedGuardianId!.isNotEmpty;
 
           return ListView(
             padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 20),
@@ -48,7 +339,7 @@ class SeniorDashboard extends StatelessWidget {
               Text(
                 'Welcome,',
                 style: TextStyle(
-                  fontSize: 24, // Massive typography
+                  fontSize: 24,
                   color: Colors.grey.shade600,
                   fontWeight: FontWeight.w500,
                 ),
@@ -59,12 +350,75 @@ class SeniorDashboard extends StatelessWidget {
                     ? profile!.phoneNumber
                     : 'Senior Account',
                 style: const TextStyle(
-                  fontSize: 36, // Massive typography
+                  fontSize: 36,
                   fontWeight: FontWeight.bold,
                   color: Color(0xFF0F172A),
                 ),
               ),
-              const SizedBox(height: 30),
+              const SizedBox(height: 8),
+
+              // Caretaker Status Badge
+              if (hasGuardian)
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFDCFCE7),
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: const Color(0xFF22C55E)),
+                    ),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.verified_user_rounded, color: Color(0xFF15803D), size: 22),
+                        SizedBox(width: 8),
+                        Text(
+                          'Protected by Caretaker',
+                          style: TextStyle(
+                            color: Color(0xFF15803D),
+                            fontWeight: FontWeight.bold,
+                            fontSize: 16,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                )
+              else
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: GestureDetector(
+                    onTap: () => _showPairingCodeDialog(context, authProvider, profile),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFFEF3C7),
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(color: const Color(0xFFF59E0B)),
+                      ),
+                      child: const Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.link_rounded, color: Color(0xFFB45309), size: 22),
+                          SizedBox(width: 8),
+                          Text(
+                            'Pair with Caretaker (Show Code)',
+                            style: TextStyle(
+                              color: Color(0xFFB45309),
+                              fontWeight: FontWeight.bold,
+                              fontSize: 16,
+                            ),
+                          ),
+                          SizedBox(width: 6),
+                          Icon(Icons.arrow_forward_ios, color: Color(0xFFB45309), size: 14),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+
+              const SizedBox(height: 28),
 
               // Big Balance Card ("My Money")
               Container(
@@ -83,7 +437,7 @@ class SeniorDashboard extends StatelessWidget {
                     ),
                   ],
                 ),
-                padding: const EdgeInsets.all(32), // More padding for massive feel
+                padding: const EdgeInsets.all(32),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -101,17 +455,17 @@ class SeniorDashboard extends StatelessWidget {
                               child: const Icon(
                                 Icons.account_balance_wallet_rounded,
                                 color: Colors.white,
-                                size: 32, // Massive icon
+                                size: 36,
                               ),
                             ),
                             const SizedBox(width: 16),
                             const Text(
                               'MY MONEY',
                               style: TextStyle(
-                                color: Colors.white70,
-                                fontSize: 20, // Massive typography
+                                fontSize: 22,
                                 fontWeight: FontWeight.bold,
-                                letterSpacing: 1.1,
+                                color: Colors.white70,
+                                letterSpacing: 1.5,
                               ),
                             ),
                           ],
@@ -122,7 +476,7 @@ class SeniorDashboard extends StatelessWidget {
                     Text(
                       formattedBalance,
                       style: const TextStyle(
-                        fontSize: 56, // Massive typography
+                        fontSize: 56,
                         fontWeight: FontWeight.w800,
                         color: Colors.white,
                         letterSpacing: -0.5,
@@ -161,7 +515,7 @@ class SeniorDashboard extends StatelessWidget {
               // Big "Send Money" Button
               SizedBox(
                 width: double.infinity,
-                height: 100, // Massive height
+                height: 100,
                 child: ElevatedButton.icon(
                   onPressed: () {
                     Navigator.push(
@@ -171,10 +525,10 @@ class SeniorDashboard extends StatelessWidget {
                       ),
                     );
                   },
-                  icon: const Icon(Icons.send_rounded, size: 48), // Massive icon
+                  icon: const Icon(Icons.send_rounded, size: 48),
                   label: const Text(
                     'SEND MONEY',
-                    style: TextStyle(fontSize: 32, fontWeight: FontWeight.bold), // Massive font
+                    style: TextStyle(fontSize: 32, fontWeight: FontWeight.bold),
                   ),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFF0F172A),
@@ -194,7 +548,7 @@ class SeniorDashboard extends StatelessWidget {
               const Text(
                 'Recent Transfers',
                 style: TextStyle(
-                  fontSize: 28, // Massive font
+                  fontSize: 28,
                   fontWeight: FontWeight.bold,
                   color: Color(0xFF0F172A),
                 ),
@@ -289,6 +643,7 @@ class SeniorDashboard extends StatelessWidget {
                     );
                   },
                 ),
+              const SizedBox(height: 80), // Extra space for FAB
             ],
           );
         },
@@ -309,7 +664,7 @@ class SeniorDashboard extends StatelessWidget {
       margin: const EdgeInsets.only(bottom: 24),
       padding: const EdgeInsets.all(24),
       decoration: BoxDecoration(
-        color: const Color(0xFFFEF2F2), // Light red bg
+        color: const Color(0xFFFEF2F2),
         borderRadius: BorderRadius.circular(24),
         border: Border.all(color: Colors.red.shade300, width: 2),
       ),
@@ -324,7 +679,7 @@ class SeniorDashboard extends StatelessWidget {
                 child: Text(
                   'Transfer to $receiverName is on hold',
                   style: const TextStyle(
-                    fontSize: 24, // Massive font
+                    fontSize: 24,
                     fontWeight: FontWeight.bold,
                     color: Colors.red,
                   ),
@@ -336,27 +691,29 @@ class SeniorDashboard extends StatelessWidget {
           Text(
             'Amount: ${currencyFormatter.format(amount)}',
             style: const TextStyle(
-              fontSize: 28, // Massive font
-              fontWeight: FontWeight.w800,
+              fontSize: 26,
+              fontWeight: FontWeight.bold,
+              color: Color(0xFF0F172A),
             ),
           ),
-          const SizedBox(height: 24),
+          const SizedBox(height: 20),
           SizedBox(
             width: double.infinity,
-            height: 80, // Massive button
+            height: 70,
             child: ElevatedButton.icon(
               onPressed: () => _cancelAndRefund(context, uid, docId, amount),
-              icon: const Icon(Icons.cancel_rounded, size: 36),
+              icon: const Icon(Icons.cancel_outlined, size: 32),
               label: const Text(
                 'CANCEL TRANSFER',
-                style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+                style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
               ),
               style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.red,
+                backgroundColor: const Color(0xFFDC2626),
                 foregroundColor: Colors.white,
                 shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(20),
+                  borderRadius: BorderRadius.circular(16),
                 ),
+                elevation: 4,
               ),
             ),
           ),
@@ -372,23 +729,25 @@ class SeniorDashboard extends StatelessWidget {
     required String dateStr,
     required NumberFormat currencyFormatter,
   }) {
+    Color statusColor = Colors.grey;
+    if (status == 'completed') statusColor = Colors.green;
+    if (status == 'cancelled') statusColor = Colors.red;
+    if (status == 'flagged') statusColor = Colors.orange;
+
     return Container(
       margin: const EdgeInsets.only(bottom: 16),
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: Colors.grey.shade200),
+        border: Border.all(color: Colors.grey.shade200, width: 1.5),
       ),
       child: Row(
         children: [
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: Colors.grey.shade100,
-              borderRadius: BorderRadius.circular(16),
-            ),
-            child: const Icon(Icons.person, size: 32, color: Colors.grey),
+          CircleAvatar(
+            radius: 28,
+            backgroundColor: Colors.grey.shade100,
+            child: const Icon(Icons.person, color: Colors.grey, size: 32),
           ),
           const SizedBox(width: 16),
           Expanded(
@@ -407,7 +766,7 @@ class SeniorDashboard extends StatelessWidget {
                 const SizedBox(height: 4),
                 Text(
                   'Status: $status',
-                  style: TextStyle(fontSize: 16, color: Colors.grey.shade800, fontStyle: FontStyle.italic),
+                  style: TextStyle(fontSize: 16, color: statusColor, fontWeight: FontWeight.w600),
                 ),
               ],
             ),

@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../core/providers/auth_provider.dart';
 import '../../core/models/user_profile.dart';
-import 'linking_screen.dart';
 
 class AuthScreen extends StatefulWidget {
   const AuthScreen({super.key});
@@ -179,8 +178,12 @@ class _AuthScreenState extends State<AuthScreen> {
       if (authProvider.userProfile == null) {
         return _buildRoleSelectionScreen(context, authProvider);
       }
-      // Profile exists, show linking screen
-      return LinkingScreen(userProfile: authProvider.userProfile!);
+      // Profile exists, main.dart routes to the proper dashboard
+      return const Scaffold(
+        body: Center(
+          child: CircularProgressIndicator(color: Color(0xFF6C63FF)),
+        ),
+      );
     }
 
     // User not signed in, show phone auth

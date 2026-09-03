@@ -6,8 +6,9 @@ import 'core/providers/auth_provider.dart';
 import 'core/providers/wallet_provider.dart';
 import 'core/models/user_profile.dart';
 import 'features/auth/auth_screen.dart';
-import 'features/dashboard/senior_home_wrapper.dart';
+import 'features/dashboard/senior_dashboard.dart';
 import 'features/dashboard/guardian_dashboard.dart';
+import 'features/auth/guardian_linking_screen.dart';
 
 // Mock IDs retained for backward compatibility with payment_flow.dart
 const String mockSeniorId = 'senior_user_1';
@@ -61,10 +62,13 @@ class ImaiPayApp extends StatelessWidget {
             }
 
             if (userProfile.role == UserRole.senior) {
-              return const SeniorHomeWrapper();
+              return const SeniorDashboard();
             }
 
             if (userProfile.role == UserRole.guardian) {
+              if (userProfile.linkedSeniorIds.isEmpty) {
+                return const GuardianLinkingScreen();
+              }
               return const GuardianDashboard();
             }
 

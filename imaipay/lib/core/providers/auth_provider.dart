@@ -151,7 +151,7 @@ class AuthProvider extends ChangeNotifier {
     // Find the senior with this code
     final snapshot = await _firestore
         .collection('users')
-        .where('linkingCode', isEqualTo: code)
+        .where('linkingCode', isEqualTo: code.trim())
         .limit(1)
         .get();
         
@@ -159,12 +159,68 @@ class AuthProvider extends ChangeNotifier {
     
     final seniorDoc = snapshot.docs.first;
     
-    // Link them together
+    // Link Senior to Guardian
     await _firestore.collection('users').doc(seniorDoc.id).update({
       'linkedGuardianId': _user!.uid,
       'linkingCode': null, // Clear it after use
     });
+
+    // Add Senior to Guardian's linked list
+    await _firestore.collection('users').doc(_user!.uid).update({
+      'linkedSeniorIds': FieldValue.arrayUnion([seniorDoc.id]),
+    });
     
+    await _fetchUserProfile(_user!.uid);
+    notifyListeners();
     return true;
+  }
+
+  Future<void> unlinkSenior(String seniorId) async {
+    if (_user == null) return;
+    await _firestore.collection('users').doc(seniorId).update({
+      'linkedGuardianId': null,
+    });
+    await _firestore.collection('users').doc(_user!.uid).update({
+      'linkedSeniorIds': FieldValue.arrayRemove([seniorId]),
+    });
+    await _fetchUserProfile(_user!.uid);
+    notifyListeners();
+  }
+
+  Future<void> unlinkSelfFromGuardian() async {
+    if (_user == null) return;
+    final guardianId = _userProfile?.linkedGuardianId;
+    await _firestore.collection('users').doc(_user!.uid).update({
+      'linkedGuardianId': null,
+    });
+    if (guardianId != null && guardianId.isNotEmpty) {
+      await _firestore.collection('users').doc(guardianId).update({
+        'linkedSeniorIds': FieldValue.arrayRemove([_user!.uid]),
+      });
+    }
+    await _fetchUserProfile(_user!.uid);
+    notifyListeners();
+  }
+
+  Future<void> updateEscrowDelay(String targetUid, int minutes) async {
+    await _firestore.collection('users').doc(targetUid).update({
+      'escrowDelayMinutes': minutes,
+    });
+    if (_user != null) {
+      await _fetchUserProfile(_user!.uid);
+      notifyListeners();
+    }
+  }
+
+  Future<void> addTrustedContact(String seniorUid, String phone) async {
+    await _firestore.collection('users').doc(seniorUid).update({
+      'trustedContacts': FieldValue.arrayUnion([phone]),
+    });
+  }
+
+  Future<void> removeTrustedContact(String seniorUid, String phone) async {
+    await _firestore.collection('users').doc(seniorUid).update({
+      'trustedContacts': FieldValue.arrayRemove([phone]),
+    });
   }
 }
