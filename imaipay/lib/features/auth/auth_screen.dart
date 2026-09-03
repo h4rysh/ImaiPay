@@ -27,7 +27,7 @@ class _AuthScreenState extends State<AuthScreen> {
   }
 
   Future<void> _sendSms(AuthProvider authProvider) async {
-    final phone = _phoneController.text.trim();
+    final phone = _phoneController.text.replaceAll(' ', '').trim();
     if (phone.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(

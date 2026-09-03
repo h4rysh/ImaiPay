@@ -5,11 +5,7 @@ import 'package:flutter_contacts/flutter_contacts.dart';
 import 'package:phone_state/phone_state.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
-// ignore: unused_import
-import 'package:local_auth/local_auth.dart';
 import 'core/providers/auth_provider.dart';
-// ignore: unused_import
-import 'core/providers/wallet_provider.dart';
 
 class PaymentFlowScreen extends StatefulWidget {
   const PaymentFlowScreen({super.key});
@@ -24,7 +20,8 @@ class _PaymentFlowScreenState extends State<PaymentFlowScreen> {
   List<Contact>? _contacts;
   String? _selectedContactName;
   String? _selectedPhoneNumber;
-  double? _amount;
+  double _amount = 0.0;
+  String _amountString = '0';
   bool _isProcessing = false;
 
   PhoneStateStatus _currentPhoneStatus = PhoneStateStatus.NOTHING;
@@ -56,7 +53,7 @@ class _PaymentFlowScreenState extends State<PaymentFlowScreen> {
       );
       if (mounted) {
         setState(() {
-          _contacts = contacts.take(10).toList(); // Limit for demo
+          _contacts = contacts.take(20).toList();
         });
       }
     } else {
@@ -104,14 +101,6 @@ class _PaymentFlowScreenState extends State<PaymentFlowScreen> {
           });
         }
       });
-    } else {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Phone permission is needed for Live-Call Guard.'),
-          ),
-        );
-      }
     }
   }
 
@@ -127,58 +116,71 @@ class _PaymentFlowScreenState extends State<PaymentFlowScreen> {
         _currentPhoneStatus == PhoneStateStatus.CALL_STARTED;
   }
 
+  void _onKeypadTap(String value) {
+    setState(() {
+      if (value == '<') {
+        if (_amountString.length > 1) {
+          _amountString = _amountString.substring(0, _amountString.length - 1);
+        } else {
+          _amountString = '0';
+        }
+      } else if (value == '.') {
+        if (!_amountString.contains('.')) {
+          _amountString += '.';
+        }
+      } else {
+        if (_amountString == '0') {
+          _amountString = value;
+        } else {
+          final parts = _amountString.split('.');
+          if (parts.length == 2 && parts[1].length >= 2) return;
+          _amountString += value;
+        }
+      }
+      _amount = double.tryParse(_amountString) ?? 0.0;
+    });
+  }
+
   Future<void> _submitPayment() async {
     final authProvider = context.read<AuthProvider>();
     if (authProvider.user == null) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('User is not authenticated.')),
-        );
-      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('User is not authenticated.')),
+      );
       return;
     }
-    final senderUid = context.read<AuthProvider>().user!.uid;
-
-    if (_amount == null || _amount! <= 0) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Please enter a valid amount.')),
-        );
-      }
+    
+    final senderUid = authProvider.user!.uid;
+    final userProfile = authProvider.userProfile;
+    final trustedContacts = userProfile?.trustedContacts ?? [];
+    
+    if (_amount <= 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please enter a valid amount.')),
+      );
       return;
     }
 
     setState(() => _isProcessing = true);
 
-    String status = 'in_escrow';
+    String status = 'pending';
     String? flaggedReason;
 
+    final isTrusted = _selectedPhoneNumber != null && 
+        trustedContacts.contains(_selectedPhoneNumber!);
+
     if (_isCallActive) {
-      status = 'pending_guardian';
+      status = 'flagged';
       flaggedReason = 'active_call';
-    } else if (_amount! > 1000) {
-      status = 'pending_guardian';
+    } else if (!isTrusted) {
+      status = 'flagged';
+      flaggedReason = 'untrusted_contact';
+    } else if (_amount > 1000) {
+      status = 'flagged';
       flaggedReason = 'high_value';
     }
 
     try {
-      // Query Firestore for the receiver's phone number if available
-      if (_selectedPhoneNumber != null && _selectedPhoneNumber!.isNotEmpty) {
-        try {
-          final querySnapshot = await FirebaseFirestore.instance
-              .collection('users')
-              .where('phoneNumber', isEqualTo: _selectedPhoneNumber)
-              .limit(1)
-              .get();
-          if (querySnapshot.docs.isNotEmpty) {
-            debugPrint('Receiver found in users collection: ${querySnapshot.docs.first.id}');
-          }
-        } catch (e) {
-          debugPrint('Receiver lookup note: $e');
-        }
-      }
-
-      // Create transaction doc with senderId, receiverName, amount, status, etc.
       await FirebaseFirestore.instance.collection('transactions').add({
         'senderId': senderUid,
         'receiverName': _selectedContactName ?? 'Unknown',
@@ -187,18 +189,18 @@ class _PaymentFlowScreenState extends State<PaymentFlowScreen> {
         'amount': _amount,
         'status': status,
         'flaggedReason': flaggedReason,
+        'guardianId': userProfile?.linkedGuardianId, // for guardian querying
         'createdAt': FieldValue.serverTimestamp(),
       });
 
-      // Deduct the _amount from the sender's walletBalance in users collection immediately
       await FirebaseFirestore.instance.collection('users').doc(senderUid).update({
-        'walletBalance': FieldValue.increment(-_amount!),
+        'walletBalance': FieldValue.increment(-_amount),
       });
 
       if (!mounted) return;
       setState(() => _isProcessing = false);
 
-      final bool isFlagged = flaggedReason != null;
+      final bool isFlagged = status == 'flagged';
 
       await showDialog(
         context: context,
@@ -209,16 +211,16 @@ class _PaymentFlowScreenState extends State<PaymentFlowScreen> {
             mainAxisSize: MainAxisSize.min,
             children: [
               const SizedBox(height: 16),
-              const Icon(
-                Icons.check_circle,
-                color: Colors.green,
-                size: 64,
+              Icon(
+                isFlagged ? Icons.warning_rounded : Icons.check_circle,
+                color: isFlagged ? Colors.orange : Colors.green,
+                size: 80,
               ),
               const SizedBox(height: 24),
               Text(
                 isFlagged ? 'Sent for Guardian Review!' : 'Transfer submitted!',
                 textAlign: TextAlign.center,
-                style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+                style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
               ),
               const SizedBox(height: 16),
             ],
@@ -233,9 +235,9 @@ class _PaymentFlowScreenState extends State<PaymentFlowScreen> {
                   backgroundColor: const Color(0xFF6C63FF),
                   foregroundColor: Colors.white,
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                  padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 12),
+                  padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 16),
                 ),
-                child: const Text('OK', style: TextStyle(fontSize: 18)),
+                child: const Text('OK', style: TextStyle(fontSize: 24)),
               ),
             ),
           ],
@@ -243,7 +245,7 @@ class _PaymentFlowScreenState extends State<PaymentFlowScreen> {
       );
 
       if (mounted) {
-        Navigator.pop(context); // Go back to home
+        Navigator.pop(context);
       }
     } catch (e) {
       if (mounted) {
@@ -258,16 +260,28 @@ class _PaymentFlowScreenState extends State<PaymentFlowScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: Colors.white,
       appBar: AppBar(
+        backgroundColor: Colors.white,
+        elevation: 0,
         leading: IconButton(
-          icon: const Icon(Icons.close),
-          onPressed: () => Navigator.pop(context),
+          icon: const Icon(Icons.arrow_back_ios_new, color: Colors.black, size: 28),
+          onPressed: () {
+            if (_pageController.page != null && _pageController.page! > 0) {
+              _pageController.previousPage(
+                duration: const Duration(milliseconds: 300),
+                curve: Curves.easeInOut,
+              );
+            } else {
+              Navigator.pop(context);
+            }
+          },
         ),
       ),
       body: SafeArea(
         child: PageView(
           controller: _pageController,
-          physics: const NeverScrollableScrollPhysics(), // Disable swipe to force button clicks
+          physics: const NeverScrollableScrollPhysics(),
           children: [
             _buildWhoScreen(),
             _buildAmountScreen(),
@@ -284,22 +298,21 @@ class _PaymentFlowScreenState extends State<PaymentFlowScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const Text('Who are you sending money to?', style: TextStyle(fontSize: 32, fontWeight: FontWeight.bold)),
-          const SizedBox(height: 24),
+          const Text('Who are you paying?', style: TextStyle(fontSize: 40, fontWeight: FontWeight.bold, height: 1.1)),
+          const SizedBox(height: 32),
           if (_contacts == null)
-            const Center(child: CircularProgressIndicator())
+            const Expanded(child: Center(child: CircularProgressIndicator()))
           else if (_contacts!.isEmpty)
-            const Center(
-              child: Padding(
-                padding: EdgeInsets.only(top: 32.0),
-                child: Text('No contacts found.', style: TextStyle(fontSize: 18, color: Colors.grey)),
+            const Expanded(
+              child: Center(
+                child: Text('No contacts found.', style: TextStyle(fontSize: 24, color: Colors.grey)),
               ),
             )
           else
             Expanded(
               child: ListView.separated(
                 itemCount: _contacts!.length,
-                separatorBuilder: (context, index) => const SizedBox(height: 16),
+                separatorBuilder: (context, index) => const SizedBox(height: 24),
                 itemBuilder: (context, index) {
                   final contact = _contacts![index];
                   final name = contact.displayName ?? 'Unknown';
@@ -316,7 +329,7 @@ class _PaymentFlowScreenState extends State<PaymentFlowScreen> {
                         _selectedContactName = name;
                         _selectedPhoneNumber = cleanPhone;
                       });
-                      _nextPage();
+                      Future.delayed(const Duration(milliseconds: 150), _nextPage);
                     },
                   );
                 },
@@ -334,33 +347,36 @@ class _PaymentFlowScreenState extends State<PaymentFlowScreen> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Text(
-            'How much to ${_selectedContactName ?? 'recipient'}?',
-            style: const TextStyle(fontSize: 32, fontWeight: FontWeight.bold),
+            'How much?',
+            style: const TextStyle(fontSize: 40, fontWeight: FontWeight.bold, height: 1.1),
+            textAlign: TextAlign.center,
           ),
-          const SizedBox(height: 48),
-          TextField(
-            keyboardType: const TextInputType.numberWithOptions(decimal: true),
-            style: const TextStyle(fontSize: 48, fontWeight: FontWeight.bold),
-            decoration: const InputDecoration(
-              prefixText: '\$ ',
-              border: InputBorder.none,
-              hintText: '0.00',
-            ),
-            onChanged: (val) {
-              setState(() => _amount = double.tryParse(val));
-            },
+          const SizedBox(height: 16),
+          Text(
+            'to ${_selectedContactName ?? 'Unknown'}',
+            style: const TextStyle(fontSize: 24, color: Colors.black54),
+            textAlign: TextAlign.center,
           ),
           const Spacer(),
+          Center(
+            child: Text(
+              '\$$_amountString',
+              style: const TextStyle(fontSize: 72, fontWeight: FontWeight.bold),
+            ),
+          ),
+          const Spacer(),
+          _buildKeypad(),
+          const SizedBox(height: 24),
           SizedBox(
             height: 80,
             child: ElevatedButton(
-              onPressed: (_amount != null && _amount! > 0) ? _nextPage : null,
+              onPressed: (_amount > 0) ? _nextPage : null,
               style: ElevatedButton.styleFrom(
                 backgroundColor: const Color(0xFF6C63FF),
                 foregroundColor: Colors.white,
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
               ),
-              child: const Text('Next', style: TextStyle(fontSize: 24)),
+              child: const Text('Next', style: TextStyle(fontSize: 32, fontWeight: FontWeight.bold)),
             ),
           ),
         ],
@@ -368,65 +384,106 @@ class _PaymentFlowScreenState extends State<PaymentFlowScreen> {
     );
   }
 
-  Widget _buildReviewScreen() {
-    final displayAmount = _amount != null ? _amount!.toStringAsFixed(2) : '0.00';
+  Widget _buildKeypad() {
+    return GridView.count(
+      shrinkWrap: true,
+      crossAxisCount: 3,
+      childAspectRatio: 1.5,
+      mainAxisSpacing: 16,
+      crossAxisSpacing: 16,
+      physics: const NeverScrollableScrollPhysics(),
+      children: [
+        for (var i = 1; i <= 9; i++) _buildKeypadButton(i.toString()),
+        _buildKeypadButton('.'),
+        _buildKeypadButton('0'),
+        _buildKeypadButton('<', isIcon: true),
+      ],
+    );
+  }
 
+  Widget _buildKeypadButton(String label, {bool isIcon = false}) {
+    return InkWell(
+      onTap: () => _onKeypadTap(label),
+      borderRadius: BorderRadius.circular(16),
+      child: Container(
+        decoration: BoxDecoration(
+          color: Colors.grey[100],
+          borderRadius: BorderRadius.circular(16),
+        ),
+        child: Center(
+          child: isIcon
+              ? const Icon(Icons.backspace_rounded, size: 36, color: Colors.black87)
+              : Text(label, style: const TextStyle(fontSize: 40, fontWeight: FontWeight.w600, color: Colors.black87)),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildReviewScreen() {
     return Padding(
       padding: const EdgeInsets.all(24.0),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const Text('Review Transfer', style: TextStyle(fontSize: 32, fontWeight: FontWeight.bold)),
+          const Text('Review & Send', style: TextStyle(fontSize: 40, fontWeight: FontWeight.bold)),
           const SizedBox(height: 48),
-          if (_isCallActive)
-            Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: Colors.red[50],
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: Colors.red),
-              ),
-              child: const Column(
-                children: [
-                  Icon(Icons.warning_rounded, color: Colors.red, size: 48),
-                  SizedBox(height: 8),
-                  Text(
-                    'Are you on a phone call right now?',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(fontSize: 18, color: Colors.red, fontWeight: FontWeight.bold),
-                  ),
-                  SizedBox(height: 8),
-                  Text(
-                    'This transfer will be sent to your Guardian for review to keep you safe.',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(fontSize: 16, color: Colors.red),
-                  ),
-                ],
-              ),
+          
+          Container(
+            padding: const EdgeInsets.all(32),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF8F9FA),
+              borderRadius: BorderRadius.circular(32),
+              border: Border.all(color: Colors.grey[200]!, width: 2),
             ),
-          const SizedBox(height: 32),
-          Text('To: ${_selectedContactName ?? 'Unknown'}', style: const TextStyle(fontSize: 24)),
-          if (_selectedPhoneNumber != null && _selectedPhoneNumber!.isNotEmpty) ...[
-            const SizedBox(height: 8),
-            Text('Phone: $_selectedPhoneNumber', style: const TextStyle(fontSize: 18, color: Colors.black54)),
-          ],
-          const SizedBox(height: 16),
-          Text('Amount: \$$displayAmount', style: const TextStyle(fontSize: 32, fontWeight: FontWeight.bold)),
+            child: Column(
+              children: [
+                CircleAvatar(
+                  radius: 50,
+                  backgroundColor: const Color(0xFF6C63FF).withValues(alpha: 0.1),
+                  child: Text(
+                    _selectedContactName?.isNotEmpty == true ? _selectedContactName![0] : '?',
+                    style: const TextStyle(fontSize: 48, color: Color(0xFF6C63FF), fontWeight: FontWeight.bold),
+                  ),
+                ),
+                const SizedBox(height: 24),
+                Text(
+                  _selectedContactName ?? 'Unknown',
+                  style: const TextStyle(fontSize: 32, fontWeight: FontWeight.bold),
+                  textAlign: TextAlign.center,
+                ),
+                if (_selectedPhoneNumber != null && _selectedPhoneNumber!.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  Text(_selectedPhoneNumber!, style: const TextStyle(fontSize: 24, color: Colors.black54)),
+                ],
+                const SizedBox(height: 32),
+                const Divider(height: 1, thickness: 2),
+                const SizedBox(height: 32),
+                Text('Amount', style: TextStyle(fontSize: 24, color: Colors.grey[600])),
+                const SizedBox(height: 8),
+                Text(
+                  '\$$_amountString',
+                  style: const TextStyle(fontSize: 56, fontWeight: FontWeight.w800),
+                ),
+              ],
+            ),
+          ),
+          
           const Spacer(),
           SizedBox(
-            height: 80,
+            height: 90,
             child: ElevatedButton(
               onPressed: _isProcessing ? null : _submitPayment,
               style: ElevatedButton.styleFrom(
-                backgroundColor: _isCallActive ? Colors.orange : Colors.green,
+                backgroundColor: const Color(0xFF6C63FF),
                 foregroundColor: Colors.white,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
               ),
               child: _isProcessing
                   ? const CircularProgressIndicator(color: Colors.white)
-                  : Text(_isCallActive ? 'Send for Review' : 'Confirm & Send', style: const TextStyle(fontSize: 24)),
+                  : const Text('Send', style: TextStyle(fontSize: 36, fontWeight: FontWeight.bold)),
             ),
           ),
+          const SizedBox(height: 16),
         ],
       ),
     );
@@ -450,21 +507,31 @@ class _ContactCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return InkWell(
       onTap: onTap,
+      borderRadius: BorderRadius.circular(24),
       child: Container(
         padding: const EdgeInsets.all(24),
         decoration: BoxDecoration(
-          color: isSelected ? const Color(0xFFE8EAF6) : Colors.grey[100],
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: isSelected ? const Color(0xFF6C63FF) : Colors.transparent, width: 2),
+          color: isSelected ? const Color(0xFF6C63FF).withValues(alpha: 0.1) : Colors.grey[100],
+          borderRadius: BorderRadius.circular(24),
+          border: Border.all(
+            color: isSelected ? const Color(0xFF6C63FF) : Colors.transparent, 
+            width: 3
+          ),
         ),
         child: Row(
           children: [
             CircleAvatar(
-              radius: 30,
-              backgroundColor: const Color(0xFF6C63FF).withValues(alpha: 0.2),
+              radius: 40,
+              backgroundColor: isSelected 
+                  ? const Color(0xFF6C63FF) 
+                  : const Color(0xFF6C63FF).withValues(alpha: 0.2),
               child: Text(
                 name.isNotEmpty ? name[0] : '?',
-                style: const TextStyle(fontSize: 24, color: Color(0xFF6C63FF)),
+                style: TextStyle(
+                  fontSize: 36, 
+                  color: isSelected ? Colors.white : const Color(0xFF6C63FF),
+                  fontWeight: FontWeight.bold,
+                ),
               ),
             ),
             const SizedBox(width: 24),
@@ -474,14 +541,14 @@ class _ContactCard extends StatelessWidget {
                 children: [
                   Text(
                     name,
-                    style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w500),
+                    style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w600),
                     overflow: TextOverflow.ellipsis,
                   ),
                   if (phoneNumber != null && phoneNumber!.isNotEmpty) ...[
-                    const SizedBox(height: 4),
+                    const SizedBox(height: 8),
                     Text(
                       phoneNumber!,
-                      style: TextStyle(fontSize: 16, color: Colors.grey[600]),
+                      style: TextStyle(fontSize: 20, color: Colors.grey[700]),
                       overflow: TextOverflow.ellipsis,
                     ),
                   ],

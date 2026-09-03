@@ -9,6 +9,8 @@ class UserProfile {
   final double walletBalance;
   final String? linkedGuardianId;
   final String? linkingCode;
+  final int escrowDelayMinutes;
+  final List<String> trustedContacts;
 
   UserProfile({
     required this.uid,
@@ -17,6 +19,8 @@ class UserProfile {
     this.walletBalance = 0.0,
     this.linkedGuardianId,
     this.linkingCode,
+    this.escrowDelayMinutes = 5,
+    this.trustedContacts = const [],
   });
 
   factory UserProfile.fromMap(Map<String, dynamic> data, String documentId) {
@@ -27,6 +31,8 @@ class UserProfile {
       walletBalance: (data['walletBalance'] ?? 0.0).toDouble(),
       linkedGuardianId: data['linkedGuardianId'],
       linkingCode: data['linkingCode'],
+      escrowDelayMinutes: data['escrowDelayMinutes'] ?? 5,
+      trustedContacts: List<String>.from(data['trustedContacts'] ?? []),
     );
   }
 
@@ -37,6 +43,8 @@ class UserProfile {
       'walletBalance': walletBalance,
       'linkedGuardianId': linkedGuardianId,
       'linkingCode': linkingCode,
+      'escrowDelayMinutes': escrowDelayMinutes,
+      'trustedContacts': trustedContacts,
       'updatedAt': FieldValue.serverTimestamp(),
     };
   }

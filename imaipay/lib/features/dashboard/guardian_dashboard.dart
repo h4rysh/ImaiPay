@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:local_auth/local_auth.dart';
@@ -14,6 +15,67 @@ class GuardianDashboard extends StatefulWidget {
 
 class _GuardianDashboardState extends State<GuardianDashboard> {
   bool _isProcessing = false;
+  StreamSubscription? _flaggedTxSub;
+  final Set<String> _knownFlaggedTxIds = {};
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _listenToFlaggedTransactions();
+    });
+  }
+
+  void _listenToFlaggedTransactions() {
+    final uid = context.read<AuthProvider>().user?.uid;
+    if (uid == null) return;
+    
+    _flaggedTxSub = FirebaseFirestore.instance
+        .collection('transactions')
+        .where('guardianId', isEqualTo: uid)
+        .where('status', isEqualTo: 'flagged')
+        .snapshots()
+        .listen((snapshot) {
+      for (var change in snapshot.docChanges) {
+        if (change.type == DocumentChangeType.added) {
+          if (!_knownFlaggedTxIds.contains(change.doc.id)) {
+            _knownFlaggedTxIds.add(change.doc.id);
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: const Row(
+                    children: [
+                      Icon(Icons.warning_amber_rounded, color: Colors.white, size: 28),
+                      SizedBox(width: 12),
+                      Expanded(
+                        child: Text(
+                          'Action Required: Suspicious Transfer', 
+                          style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white)
+                        ),
+                      ),
+                    ],
+                  ),
+                  backgroundColor: Colors.redAccent,
+                  duration: const Duration(seconds: 5),
+                  behavior: SnackBarBehavior.floating,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  margin: const EdgeInsets.all(16),
+                ),
+              );
+            }
+          }
+        } else if (change.type == DocumentChangeType.removed) {
+          _knownFlaggedTxIds.remove(change.doc.id);
+        }
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _flaggedTxSub?.cancel();
+    super.dispose();
+  }
 
   Future<void> _authenticateAndApprove(String docId) async {
     final auth = LocalAuthentication();
@@ -26,7 +88,6 @@ class _GuardianDashboardState extends State<GuardianDashboard> {
       );
     } catch (e) {
       if (!mounted) return;
-      // Fallback dialog for devices or simulators without biometrics enrolled
       final bool? confirmed = await showDialog<bool>(
         context: context,
         builder: (ctx) => AlertDialog(
@@ -70,7 +131,7 @@ class _GuardianDashboardState extends State<GuardianDashboard> {
             .collection('transactions')
             .doc(docId)
             .update({
-          'status': 'in_escrow',
+          'status': 'pending', // Send to escrow
           'approvedBy': guardianUid,
           'approvedAt': FieldValue.serverTimestamp(),
         });
@@ -146,14 +207,27 @@ class _GuardianDashboardState extends State<GuardianDashboard> {
       setState(() => _isProcessing = true);
       try {
         final guardianUid = context.read<AuthProvider>().user?.uid;
-        await FirebaseFirestore.instance
-            .collection('transactions')
-            .doc(docId)
-            .update({
-          'status': 'cancelled',
-          'deniedBy': guardianUid,
-          'deniedAt': FieldValue.serverTimestamp(),
-        });
+        
+        // Before denying, fetch the transaction to refund the wallet
+        final txDoc = await FirebaseFirestore.instance.collection('transactions').doc(docId).get();
+        final txData = txDoc.data();
+        if (txData != null) {
+          final senderId = txData['senderId'];
+          final amt = (txData['amount'] is num) ? (txData['amount'] as num).toDouble() : 0.0;
+          
+          await FirebaseFirestore.instance.collection('transactions').doc(docId).update({
+            'status': 'cancelled',
+            'deniedBy': guardianUid,
+            'deniedAt': FieldValue.serverTimestamp(),
+          });
+          
+          // Refund wallet
+          if (senderId != null && amt > 0) {
+             await FirebaseFirestore.instance.collection('users').doc(senderId).update({
+                'walletBalance': FieldValue.increment(amt),
+             });
+          }
+        }
 
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
@@ -162,7 +236,7 @@ class _GuardianDashboardState extends State<GuardianDashboard> {
               children: [
                 Icon(Icons.cancel, color: Colors.white),
                 SizedBox(width: 8),
-                Text('Transfer denied and cancelled.'),
+                Text('Transfer denied and cancelled. Funds refunded.'),
               ],
             ),
             backgroundColor: Color(0xFFDC2626),
@@ -182,9 +256,99 @@ class _GuardianDashboardState extends State<GuardianDashboard> {
     }
   }
 
+  Future<void> _topUpSeniorWallet() async {
+    final currentUid = context.read<AuthProvider>().user?.uid;
+    if (currentUid == null) return;
+    
+    setState(() => _isProcessing = true);
+    try {
+      final query = await FirebaseFirestore.instance
+          .collection('users')
+          .where('linkedGuardianId', isEqualTo: currentUid)
+          .limit(1)
+          .get();
+          
+      if (query.docs.isEmpty) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('No linked senior found.'), backgroundColor: Colors.orange),
+          );
+        }
+        return;
+      }
+      
+      final seniorId = query.docs.first.id;
+      final seniorPhone = query.docs.first.data()['phoneNumber'] ?? 'Senior';
+      
+      if (!mounted) return;
+      
+      double amount = 0;
+      await showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          title: Row(
+            children: [
+              const Icon(Icons.account_balance_wallet_rounded, color: Color(0xFF6C63FF)),
+              const SizedBox(width: 8),
+              Expanded(child: Text('Top Up $seniorPhone', style: const TextStyle(fontSize: 18))),
+            ],
+          ),
+          content: TextField(
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+            decoration: const InputDecoration(
+              hintText: '0.00',
+              prefixText: '\$ ',
+              border: OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(12))),
+            ),
+            onChanged: (val) => amount = double.tryParse(val) ?? 0,
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx), 
+              child: const Text('Cancel', style: TextStyle(fontSize: 16))
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                if (amount > 0) {
+                  await FirebaseFirestore.instance.collection('users').doc(seniorId).update({
+                    'walletBalance': FieldValue.increment(amount),
+                  });
+                  if (ctx.mounted) {
+                    Navigator.pop(ctx);
+                  }
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text('Successfully added \$${amount.toStringAsFixed(2)} to senior\'s wallet!'),
+                        backgroundColor: Colors.green,
+                      )
+                    );
+                  }
+                }
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF6C63FF),
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              ),
+              child: const Text('Top Up', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            ),
+          ],
+        ),
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to top up: $e'), backgroundColor: Colors.red));
+      }
+    } finally {
+      if (mounted) setState(() => _isProcessing = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    // Current user's UID from AuthProvider
     final currentUid = context.read<AuthProvider>().user?.uid ?? '';
     final currencyFormatter = NumberFormat.currency(symbol: '\$', decimalDigits: 2);
 
@@ -212,18 +376,17 @@ class _GuardianDashboardState extends State<GuardianDashboard> {
         ],
       ),
       body: StreamBuilder<QuerySnapshot>(
-        stream: FirebaseFirestore.instance
+        stream: currentUid.isEmpty ? null : FirebaseFirestore.instance
             .collection('transactions')
-            .where('status', isEqualTo: 'pending_guardian')
+            .where('guardianId', isEqualTo: currentUid)
+            .where('status', isEqualTo: 'flagged')
             .snapshots(),
         builder: (context, snapshot) {
-          if (!snapshot.hasData) {
-            return const Center(
-              child: CircularProgressIndicator(),
-            );
+          if (!snapshot.hasData && snapshot.connectionState == ConnectionState.waiting) {
+            return const Center(child: CircularProgressIndicator());
           }
 
-          final docs = snapshot.data!.docs;
+          final docs = snapshot.data?.docs ?? [];
 
           return ListView(
             padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 20),
@@ -294,6 +457,22 @@ class _GuardianDashboardState extends State<GuardianDashboard> {
                 ),
               ),
 
+              const SizedBox(height: 20),
+              
+              // Top Up Button
+              ElevatedButton.icon(
+                onPressed: _isProcessing ? null : _topUpSeniorWallet,
+                icon: const Icon(Icons.account_balance_wallet_rounded, size: 24),
+                label: const Text('Top Up Senior\'s Wallet', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF6C63FF),
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 20),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                  elevation: 2,
+                ),
+              ),
+
               const SizedBox(height: 28),
 
               // Section Header with count badge
@@ -352,8 +531,8 @@ class _GuardianDashboardState extends State<GuardianDashboard> {
                       children: [
                         Container(
                           padding: const EdgeInsets.all(20),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFFECFDF5),
+                          decoration: const BoxDecoration(
+                            color: Color(0xFFECFDF5),
                             shape: BoxShape.circle,
                           ),
                           child: const Icon(
@@ -396,10 +575,25 @@ class _GuardianDashboardState extends State<GuardianDashboard> {
                         txData['receiverName']?.toString() ?? 'Recipient';
                     final flaggedReason = txData['flaggedReason']?.toString();
                     final isActiveCall = flaggedReason == 'active_call';
+                    final isUntrusted = flaggedReason == 'untrusted_contact';
+                    final isHighValue = flaggedReason == 'high_value';
                     final createdAt = (txData['createdAt'] as Timestamp?)?.toDate();
                     final dateStr = createdAt != null
                         ? DateFormat('MMM d, yyyy • h:mm a').format(createdAt)
                         : 'Just now';
+                        
+                    String warningMsg = 'Suspicious Transfer Detected';
+                    IconData warningIcon = Icons.warning_amber_rounded;
+                    
+                    if (isActiveCall) {
+                      warningMsg = 'FLAGGED: Active Phone Call Detected';
+                      warningIcon = Icons.phone_in_talk_rounded;
+                    } else if (isUntrusted) {
+                      warningMsg = 'FLAGGED: Untrusted Contact';
+                      warningIcon = Icons.person_off_rounded;
+                    } else if (isHighValue) {
+                      warningMsg = 'FLAGGED: High Value Transfer';
+                    }
 
                     return Container(
                       margin: const EdgeInsets.only(bottom: 18),
@@ -407,14 +601,14 @@ class _GuardianDashboardState extends State<GuardianDashboard> {
                         color: Colors.white,
                         borderRadius: BorderRadius.circular(24),
                         border: Border.all(
-                          color: isActiveCall
+                          color: isActiveCall || isUntrusted
                               ? const Color(0xFFFCA5A5)
                               : const Color(0xFFFDE68A),
                           width: 1.5,
                         ),
                         boxShadow: [
                           BoxShadow(
-                            color: (isActiveCall
+                            color: (isActiveCall || isUntrusted
                                     ? Colors.red
                                     : Colors.orange)
                                 .withValues(alpha: 0.08),
@@ -435,7 +629,7 @@ class _GuardianDashboardState extends State<GuardianDashboard> {
                                 vertical: 8,
                               ),
                               decoration: BoxDecoration(
-                                color: isActiveCall
+                                color: isActiveCall || isUntrusted
                                     ? const Color(0xFFFEF2F2)
                                     : const Color(0xFFFFFBEB),
                                 borderRadius: BorderRadius.circular(14),
@@ -443,24 +637,20 @@ class _GuardianDashboardState extends State<GuardianDashboard> {
                               child: Row(
                                 children: [
                                   Icon(
-                                    isActiveCall
-                                        ? Icons.phone_in_talk_rounded
-                                        : Icons.warning_amber_rounded,
+                                    warningIcon,
                                     size: 20,
-                                    color: isActiveCall
+                                    color: isActiveCall || isUntrusted
                                         ? const Color(0xFFDC2626)
                                         : const Color(0xFFD97706),
                                   ),
                                   const SizedBox(width: 8),
                                   Expanded(
                                     child: Text(
-                                      isActiveCall
-                                          ? 'FLAGGED: Active Phone Call Detected'
-                                          : 'FLAGGED: High Value Transfer',
+                                      warningMsg,
                                       style: TextStyle(
                                         fontSize: 13,
                                         fontWeight: FontWeight.bold,
-                                        color: isActiveCall
+                                        color: isActiveCall || isUntrusted
                                             ? const Color(0xFFDC2626)
                                             : const Color(0xFFD97706),
                                       ),
@@ -523,7 +713,9 @@ class _GuardianDashboardState extends State<GuardianDashboard> {
                             Text(
                               isActiveCall
                                   ? 'The user attempted this payment while currently speaking on the phone. Scammers frequently keep seniors on the phone to rush them into fraudulent payments.'
-                                  : 'This transfer amount exceeds the normal threshold. Please verify before approving.',
+                                  : isUntrusted 
+                                    ? 'This transfer is to someone not in the trusted contacts list.' 
+                                    : 'This transfer amount exceeds the normal threshold. Please verify before approving.',
                               style: TextStyle(
                                 fontSize: 13,
                                 color: Colors.grey.shade700,
