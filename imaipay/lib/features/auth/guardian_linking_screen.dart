@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../core/providers/auth_provider.dart';
+import '../../core/services/pairing_service.dart';
 
 class GuardianLinkingScreen extends StatefulWidget {
   const GuardianLinkingScreen({super.key});
@@ -34,8 +35,17 @@ class _GuardianLinkingScreenState extends State<GuardianLinkingScreen> {
       _errorMessage = null;
     });
 
-    final authProvider = context.read<AuthProvider>();
-    final success = await authProvider.linkWithCode(code);
+    bool success = false;
+    try {
+      final pairingService = PairingService();
+      await pairingService.linkAccounts(code);
+      success = true;
+      if (mounted) {
+        await context.read<AuthProvider>().fetchProfileAgain();
+      }
+    } catch (e) {
+      success = false;
+    }
 
     if (!mounted) return;
 

@@ -1,0 +1,90 @@
+"use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.approveTransfer = void 0;
+const firestore_1 = require("firebase-admin/firestore");
+const https_1 = require("firebase-functions/v2/https");
+const admin = __importStar(require("firebase-admin"));
+const types_1 = require("../models/types");
+const audit_1 = require("../utils/audit");
+exports.approveTransfer = (0, https_1.onCall)({ region: "asia-south1" }, async (request) => {
+    const { auth, data } = request;
+    if (!auth) {
+        throw new https_1.HttpsError("unauthenticated", "User must be authenticated");
+    }
+    const { transactionId } = data;
+    if (!transactionId) {
+        throw new https_1.HttpsError("invalid-argument", "transactionId is required");
+    }
+    const db = admin.firestore();
+    await db.runTransaction(async (transaction) => {
+        const txRef = db.collection("transactions").doc(transactionId);
+        const txDoc = await transaction.get(txRef);
+        if (!txDoc.exists) {
+            throw new https_1.HttpsError("not-found", "Transaction not found");
+        }
+        const txData = txDoc.data();
+        if (txData.status !== types_1.TransactionStatus.REVIEW_REQUIRED) {
+            throw new https_1.HttpsError("failed-precondition", "Transaction is not pending review");
+        }
+        const senderRef = db.collection("users").doc(txData.senderId);
+        const senderDoc = await transaction.get(senderRef);
+        if (!senderDoc.exists) {
+            throw new https_1.HttpsError("not-found", "Sender not found");
+        }
+        const senderData = senderDoc.data();
+        if (senderData.linkedGuardianId !== auth.uid) {
+            throw new https_1.HttpsError("permission-denied", "Only the linked guardian can approve this transfer");
+        }
+        const holdDurationMinutes = txData.holdDurationMinutes || 0;
+        const escrowExpiresAt = holdDurationMinutes > 0
+            ? firestore_1.Timestamp.fromMillis(Date.now() + holdDurationMinutes * 60 * 1000)
+            : firestore_1.FieldValue.serverTimestamp(); // Or just null? Wait, if 0, maybe it expires immediately.
+        transaction.update(txRef, {
+            status: types_1.TransactionStatus.ESCROWED,
+            approvedBy: auth.uid,
+            approvedAt: firestore_1.FieldValue.serverTimestamp(),
+            escrowExpiresAt: escrowExpiresAt
+        });
+    });
+    await (0, audit_1.createAuditLog)({
+        eventType: types_1.AuditEventType.GUARDIAN_APPROVED,
+        actorId: auth.uid,
+        targetId: transactionId,
+        metadata: { transactionId }
+    });
+    return { success: true };
+});
+//# sourceMappingURL=approveTransfer.js.map

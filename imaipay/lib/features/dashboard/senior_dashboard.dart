@@ -1,26 +1,51 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
 import '../../core/providers/auth_provider.dart';
 import '../../core/providers/wallet_provider.dart';
 import '../../core/models/user_profile.dart';
+import '../../core/models/wallet.dart';
+import '../../core/models/transaction.dart';
+import '../../core/providers/transaction_provider.dart';
+import '../../core/services/transfer_service.dart';
+import '../../core/services/pairing_service.dart';
+import '../../core/models/money.dart';
 import '../../payment_flow.dart';
 
 class SeniorDashboard extends StatelessWidget {
   const SeniorDashboard({super.key});
 
-  void _showPairingCodeDialog(BuildContext context, AuthProvider authProvider, UserProfile? profile) async {
-    String code = profile?.linkingCode ?? '';
-    if (code.isEmpty) {
-      code = await authProvider.generateLinkingCode();
-    }
+  void _showPairingCodeDialog(BuildContext context) async {
+    String code = '...';
 
     if (!context.mounted) return;
 
     showDialog(
       context: context,
-      builder: (ctx) => AlertDialog(
+      barrierDismissible: false,
+      builder: (ctx) {
+        return FutureBuilder<Map<String, dynamic>>(
+          future: PairingService().createPairingSession(),
+          builder: (context, snapshot) {
+            if (snapshot.connectionState == ConnectionState.waiting) {
+              return const AlertDialog(
+                content: SizedBox(
+                  height: 100,
+                  child: Center(child: CircularProgressIndicator()),
+                ),
+              );
+            }
+
+            if (snapshot.hasError) {
+              return AlertDialog(
+                content: Text('Failed to generate code: ${snapshot.error}'),
+                actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Close'))],
+              );
+            }
+
+            code = snapshot.data?['code'] ?? 'ERROR';
+
+            return AlertDialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
         title: const Row(
           children: [
@@ -77,7 +102,10 @@ class SeniorDashboard extends StatelessWidget {
             ),
           ),
         ],
-      ),
+      );
+          },
+        );
+      },
     );
   }
 
@@ -249,7 +277,25 @@ class SeniorDashboard extends StatelessWidget {
                 subtitle: const Text('Disconnect from your guardian', style: TextStyle(fontSize: 15)),
                 onTap: () async {
                   Navigator.pop(ctx);
-                  await authProvider.unlinkSelfFromGuardian();
+                  try {
+                    await PairingService().unlinkFromGuardian();
+                    if (context.mounted) {
+                      await authProvider.fetchProfileAgain();
+                    }
+                  } catch (e) {
+                    if (context.mounted) {
+                      if (e.toString().contains('1 out of 2 underlying tasks failed')) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('Auth session expired. Please sign in again.')),
+                        );
+                        authProvider.signOut();
+                      } else {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text('Failed to unlink: $e')),
+                        );
+                      }
+                    }
+                  }
                 },
               ),
               const Divider(),
@@ -281,7 +327,6 @@ class SeniorDashboard extends StatelessWidget {
     final authProvider = context.watch<AuthProvider>();
     final walletProvider = context.read<WalletProvider>();
     final uid = authProvider.user?.uid ?? '';
-    final currencyFormatter = NumberFormat.currency(symbol: '\$', decimalDigits: 2);
 
     return Scaffold(
       backgroundColor: const Color(0xFFF8FAFC),
@@ -299,7 +344,7 @@ class SeniorDashboard extends StatelessWidget {
         centerTitle: false,
         actions: [
           StreamBuilder<UserProfile?>(
-            stream: uid.isNotEmpty ? walletProvider.streamProfile(uid) : const Stream.empty(),
+            stream: uid.isNotEmpty ? authProvider.streamProfile(uid) : const Stream.empty(),
             builder: (context, snapshot) {
               return IconButton(
                 icon: const Icon(Icons.settings_outlined, size: 30, color: Color(0xFF0F172A)),
@@ -324,16 +369,27 @@ class SeniorDashboard extends StatelessWidget {
       ),
       body: StreamBuilder<UserProfile?>(
         stream: uid.isNotEmpty
-            ? walletProvider.streamProfile(uid)
+            ? authProvider.streamProfile(uid)
             : const Stream.empty(),
         builder: (context, profileSnapshot) {
           final profile = profileSnapshot.data;
-          final balance = profile?.walletBalance ?? 0.0;
-          final formattedBalance = currencyFormatter.format(balance);
           final escrowDelayMinutes = profile?.escrowDelayMinutes ?? 5;
           final hasGuardian = profile?.linkedGuardianId != null && profile!.linkedGuardianId!.isNotEmpty;
 
-          return ListView(
+          return StreamBuilder<Wallet?>(
+            stream: uid.isNotEmpty
+                ? walletProvider.streamWallet(uid)
+                : const Stream.empty(),
+            builder: (context, walletSnapshot) {
+              if (walletSnapshot.hasError) {
+                return Center(child: Text('Wallet Error: ${walletSnapshot.error}'));
+              }
+              final wallet = walletSnapshot.data;
+              final formattedBalance = wallet != null
+                  ? Money(paise: wallet.availableBalancePaise).formatted
+                  : Money(paise: 0).formatted;
+
+              return ListView(
             padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 20),
             children: [
               Text(
@@ -389,7 +445,7 @@ class SeniorDashboard extends StatelessWidget {
                 Align(
                   alignment: Alignment.centerLeft,
                   child: GestureDetector(
-                    onTap: () => _showPairingCodeDialog(context, authProvider, profile),
+                    onTap: () => _showPairingCodeDialog(context),
                     child: Container(
                       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
                       decoration: BoxDecoration(
@@ -486,7 +542,7 @@ class SeniorDashboard extends StatelessWidget {
                     ElevatedButton.icon(
                       onPressed: () async {
                         if (uid.isNotEmpty) {
-                          await walletProvider.addFunds(uid, 100.0);
+                          await walletProvider.addDemoFunds(10000);
                         }
                       },
                       icon: const Icon(Icons.add_rounded, size: 24),
@@ -558,11 +614,8 @@ class SeniorDashboard extends StatelessWidget {
               if (uid.isEmpty)
                 const Center(child: CircularProgressIndicator())
               else
-                StreamBuilder<QuerySnapshot>(
-                  stream: FirebaseFirestore.instance
-                      .collection('transactions')
-                      .where('senderId', isEqualTo: uid)
-                      .snapshots(),
+                StreamBuilder<List<TransactionModel>>(
+                  stream: context.read<TransactionProvider>().streamTransactionsForSenior(uid),
                   builder: (context, txSnapshot) {
                     if (txSnapshot.connectionState == ConnectionState.waiting &&
                         !txSnapshot.hasData) {
@@ -573,18 +626,9 @@ class SeniorDashboard extends StatelessWidget {
                       return Text('Error: ${txSnapshot.error}', style: const TextStyle(fontSize: 20, color: Colors.red));
                     }
 
-                    final docs = txSnapshot.data?.docs.toList() ?? [];
+                    final transactions = txSnapshot.data ?? [];
 
-                    docs.sort((a, b) {
-                      final aTs = (a.data() as Map<String, dynamic>)['createdAt'] as Timestamp?;
-                      final bTs = (b.data() as Map<String, dynamic>)['createdAt'] as Timestamp?;
-                      if (aTs == null && bTs == null) return 0;
-                      if (aTs == null) return -1;
-                      if (bTs == null) return 1;
-                      return bTs.compareTo(aTs);
-                    });
-
-                    if (docs.isEmpty) {
+                    if (transactions.isEmpty) {
                       return const Text(
                         'No transactions yet.',
                         style: TextStyle(fontSize: 24, color: Colors.grey),
@@ -592,16 +636,13 @@ class SeniorDashboard extends StatelessWidget {
                     }
 
                     return Column(
-                      children: docs.map((doc) {
-                        final txData = doc.data() as Map<String, dynamic>;
-                        final amount = (txData['amount'] is num)
-                            ? (txData['amount'] as num).toDouble()
-                            : 0.0;
-                        final receiverName = txData['receiverName']?.toString() ?? 'Recipient';
-                        final status = txData['status']?.toString() ?? 'unknown';
-                        final createdAt = (txData['createdAt'] as Timestamp?)?.toDate();
+                      children: transactions.map((tx) {
+                        final formattedAmount = Money(paise: tx.amountPaise).formatted;
+                        final receiverName = tx.recipientName;
+                        final status = tx.status.name;
+                        final createdAt = tx.createdAt;
                         
-                        final isPending = status == 'pending' || status == 'escrow' || status == 'in_escrow' || status == 'pending_guardian' || status == 'flagged';
+                        final isPending = tx.status == TransactionStatus.ESCROWED || tx.status == TransactionStatus.REVIEW_REQUIRED;
                         
                         // Check if within escrow delay
                         bool isWithinDelay = false;
@@ -621,9 +662,9 @@ class SeniorDashboard extends StatelessWidget {
                           return _buildEscrowUndoCard(
                             context: context,
                             uid: uid,
-                            docId: doc.id,
+                            txId: tx.id,
                             receiverName: receiverName,
-                            amount: amount,
+                            formattedAmount: formattedAmount,
                           );
                         }
 
@@ -634,10 +675,9 @@ class SeniorDashboard extends StatelessWidget {
 
                         return _buildNormalTransactionCard(
                           receiverName: receiverName,
-                          amount: amount,
+                          formattedAmount: formattedAmount,
                           status: status,
                           dateStr: dateStr,
-                          currencyFormatter: currencyFormatter,
                         );
                       }).toList(),
                     );
@@ -647,19 +687,19 @@ class SeniorDashboard extends StatelessWidget {
             ],
           );
         },
-      ),
-    );
+      );
+    },
+  ),
+);
   }
 
   Widget _buildEscrowUndoCard({
     required BuildContext context,
     required String uid,
-    required String docId,
+    required String txId,
     required String receiverName,
-    required double amount,
+    required String formattedAmount,
   }) {
-    final currencyFormatter = NumberFormat.currency(symbol: '\$', decimalDigits: 2);
-    
     return Container(
       margin: const EdgeInsets.only(bottom: 24),
       padding: const EdgeInsets.all(24),
@@ -689,7 +729,7 @@ class SeniorDashboard extends StatelessWidget {
           ),
           const SizedBox(height: 16),
           Text(
-            'Amount: ${currencyFormatter.format(amount)}',
+            'Amount: $formattedAmount',
             style: const TextStyle(
               fontSize: 26,
               fontWeight: FontWeight.bold,
@@ -701,7 +741,7 @@ class SeniorDashboard extends StatelessWidget {
             width: double.infinity,
             height: 70,
             child: ElevatedButton.icon(
-              onPressed: () => _cancelAndRefund(context, uid, docId, amount),
+              onPressed: () => _cancelAndRefund(context, uid, txId),
               icon: const Icon(Icons.cancel_outlined, size: 32),
               label: const Text(
                 'CANCEL TRANSFER',
@@ -724,15 +764,14 @@ class SeniorDashboard extends StatelessWidget {
 
   Widget _buildNormalTransactionCard({
     required String receiverName,
-    required double amount,
+    required String formattedAmount,
     required String status,
     required String dateStr,
-    required NumberFormat currencyFormatter,
   }) {
     Color statusColor = Colors.grey;
-    if (status == 'completed') statusColor = Colors.green;
-    if (status == 'cancelled') statusColor = Colors.red;
-    if (status == 'flagged') statusColor = Colors.orange;
+    if (status == 'SETTLED' || status == 'completed' || status == 'APPROVED') statusColor = Colors.green;
+    if (status == 'CANCELLED' || status == 'cancelled' || status == 'DENIED' || status == 'FAILED') statusColor = Colors.red;
+    if (status == 'REVIEW_REQUIRED' || status == 'flagged' || status == 'ESCROWED') statusColor = Colors.orange;
 
     return Container(
       margin: const EdgeInsets.only(bottom: 16),
@@ -772,7 +811,7 @@ class SeniorDashboard extends StatelessWidget {
             ),
           ),
           Text(
-            '-${currencyFormatter.format(amount)}',
+            '-$formattedAmount',
             style: const TextStyle(
               fontSize: 22,
               fontWeight: FontWeight.w800,
@@ -783,7 +822,7 @@ class SeniorDashboard extends StatelessWidget {
     );
   }
 
-  Future<void> _cancelAndRefund(BuildContext context, String uid, String docId, double amount) async {
+  Future<void> _cancelAndRefund(BuildContext context, String uid, String txId) async {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogCtx) => AlertDialog(
@@ -810,18 +849,22 @@ class SeniorDashboard extends StatelessWidget {
     );
 
     if (confirmed == true) {
-      await FirebaseFirestore.instance
-          .collection('transactions')
-          .doc(docId)
-          .update({'status': 'cancelled'});
-          
-      if (context.mounted) {
-        await context.read<WalletProvider>().addFunds(uid, amount);
+      try {
+        await TransferService().cancelTransfer(txId);
         if (context.mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
               content: Text('Transfer cancelled and money refunded.', style: TextStyle(fontSize: 20)),
               backgroundColor: Colors.green,
+            ),
+          );
+        }
+      } catch (e) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Failed to cancel transfer: $e', style: const TextStyle(fontSize: 20)),
+              backgroundColor: Colors.red,
             ),
           );
         }

@@ -1,9 +1,16 @@
+import 'package:cloud_functions/cloud_functions.dart';
+
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:local_auth/local_auth.dart';
 import 'package:provider/provider.dart';
 import 'package:intl/intl.dart';
+import '../../core/models/wallet.dart';
+import '../../core/models/transaction.dart';
+import '../../core/providers/transaction_provider.dart';
+import '../../core/services/guardian_service.dart';
+import '../../core/models/money.dart';
 import '../../core/providers/auth_provider.dart';
 import '../auth/guardian_linking_screen.dart';
 
@@ -30,17 +37,15 @@ class _GuardianDashboardState extends State<GuardianDashboard> {
   void _listenToFlaggedTransactions() {
     final uid = context.read<AuthProvider>().user?.uid;
     if (uid == null) return;
-    
-    _flaggedTxSub = FirebaseFirestore.instance
-        .collection('transactions')
-        .where('guardianId', isEqualTo: uid)
-        .where('status', isEqualTo: 'flagged')
-        .snapshots()
-        .listen((snapshot) {
-      for (var change in snapshot.docChanges) {
-        if (change.type == DocumentChangeType.added) {
-          if (!_knownFlaggedTxIds.contains(change.doc.id)) {
-            _knownFlaggedTxIds.add(change.doc.id);
+
+    _flaggedTxSub = context
+        .read<TransactionProvider>()
+        .streamTransactionsForGuardian(uid)
+        .listen((transactions) {
+      for (final tx in transactions) {
+        if (tx.status == TransactionStatus.REVIEW_REQUIRED) {
+          if (!_knownFlaggedTxIds.contains(tx.id)) {
+            _knownFlaggedTxIds.add(tx.id);
             if (mounted) {
               ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(
@@ -50,8 +55,12 @@ class _GuardianDashboardState extends State<GuardianDashboard> {
                       SizedBox(width: 12),
                       Expanded(
                         child: Text(
-                          'Action Required: Suspicious Transfer', 
-                          style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white)
+                          'Action Required: Suspicious Transfer',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white,
+                          ),
                         ),
                       ),
                     ],
@@ -65,8 +74,8 @@ class _GuardianDashboardState extends State<GuardianDashboard> {
               );
             }
           }
-        } else if (change.type == DocumentChangeType.removed) {
-          _knownFlaggedTxIds.remove(change.doc.id);
+        } else {
+          _knownFlaggedTxIds.remove(tx.id);
         }
       }
     });
@@ -78,7 +87,7 @@ class _GuardianDashboardState extends State<GuardianDashboard> {
     super.dispose();
   }
 
-  Future<void> _authenticateAndApprove(String docId) async {
+  Future<void> _authenticateAndApprove(String txId) async {
     final auth = LocalAuthentication();
     bool didAuthenticate = false;
 
@@ -127,15 +136,7 @@ class _GuardianDashboardState extends State<GuardianDashboard> {
     if (didAuthenticate) {
       setState(() => _isProcessing = true);
       try {
-        final guardianUid = context.read<AuthProvider>().user?.uid;
-        await FirebaseFirestore.instance
-            .collection('transactions')
-            .doc(docId)
-            .update({
-          'status': 'pending', // Send to escrow
-          'approvedBy': guardianUid,
-          'approvedAt': FieldValue.serverTimestamp(),
-        });
+        await GuardianService().approveTransfer(txId);
 
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
@@ -154,7 +155,7 @@ class _GuardianDashboardState extends State<GuardianDashboard> {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Failed to update transfer: $err'),
+            content: Text('Failed to approve transfer: $err'),
             backgroundColor: Colors.red,
           ),
         );
@@ -170,8 +171,7 @@ class _GuardianDashboardState extends State<GuardianDashboard> {
     }
   }
 
-  Future<void> _denyTransfer(String docId, String receiverName, double amount) async {
-    final currencyFormatter = NumberFormat.currency(symbol: '\$', decimalDigits: 2);
+  Future<void> _denyTransfer(String txId, String receiverName, String formattedAmount) async {
     final bool? confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -184,7 +184,7 @@ class _GuardianDashboardState extends State<GuardianDashboard> {
           ],
         ),
         content: Text(
-          'Are you sure you want to deny this ${currencyFormatter.format(amount)} transfer to $receiverName? The transfer will be cancelled immediately.',
+          'Are you sure you want to deny this $formattedAmount transfer to $receiverName? The transfer will be cancelled immediately.',
         ),
         actions: [
           TextButton(
@@ -207,27 +207,7 @@ class _GuardianDashboardState extends State<GuardianDashboard> {
     if (confirmed == true && mounted) {
       setState(() => _isProcessing = true);
       try {
-        final guardianUid = context.read<AuthProvider>().user?.uid;
-        
-        final txDoc = await FirebaseFirestore.instance.collection('transactions').doc(docId).get();
-        final txData = txDoc.data();
-        if (txData != null) {
-          final senderId = txData['senderId'];
-          final amt = (txData['amount'] is num) ? (txData['amount'] as num).toDouble() : 0.0;
-          
-          await FirebaseFirestore.instance.collection('transactions').doc(docId).update({
-            'status': 'cancelled',
-            'deniedBy': guardianUid,
-            'deniedAt': FieldValue.serverTimestamp(),
-          });
-          
-          // Refund wallet
-          if (senderId != null && amt > 0) {
-             await FirebaseFirestore.instance.collection('users').doc(senderId).update({
-                'walletBalance': FieldValue.increment(amt),
-             });
-          }
-        }
+        await GuardianService().denyTransfer(txId);
 
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
@@ -266,7 +246,12 @@ class _GuardianDashboardState extends State<GuardianDashboard> {
           children: [
             const Icon(Icons.account_balance_wallet_rounded, color: Color(0xFF4338CA)),
             const SizedBox(width: 8),
-            Expanded(child: Text('Top Up $seniorPhone', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold))),
+            Expanded(
+              child: Text(
+                'Top Up $seniorPhone',
+                style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+            ),
           ],
         ),
         content: TextField(
@@ -274,29 +259,41 @@ class _GuardianDashboardState extends State<GuardianDashboard> {
           style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
           decoration: const InputDecoration(
             hintText: '0.00',
-            prefixText: '\$ ',
+            prefixText: '₹ ',
             border: OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(12))),
           ),
           onChanged: (val) => amount = double.tryParse(val) ?? 0,
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(ctx), 
+            onPressed: () => Navigator.pop(ctx),
             child: const Text('Cancel', style: TextStyle(fontSize: 16)),
           ),
           ElevatedButton(
             onPressed: () async {
               if (amount > 0) {
-                await FirebaseFirestore.instance.collection('users').doc(seniorId).update({
-                  'walletBalance': FieldValue.increment(amount),
-                });
+                final paise = (amount * 100).round();
+                try {
+                  final callable = FirebaseFunctions.instanceFor(region: 'asia-south1').httpsCallable('addDemoFunds');
+                  await callable.call({'amountPaise': paise, 'targetUserId': seniorId});
+                } catch (e) {
+                  if (ctx.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('Failed to add funds: $e'), backgroundColor: Colors.red),
+                    );
+                  }
+                  return;
+                }
+
                 if (ctx.mounted) {
                   Navigator.pop(ctx);
                 }
                 if (mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
-                      content: Text('Successfully added \$${amount.toStringAsFixed(2)} to senior\'s wallet!'),
+                      content: Text(
+                        'Successfully added ${Money.fromRupees(amount).formatted} to senior\'s wallet!',
+                      ),
                       backgroundColor: Colors.green,
                     ),
                   );
@@ -315,7 +312,8 @@ class _GuardianDashboardState extends State<GuardianDashboard> {
     );
   }
 
-  void _showManageContactsDialog(BuildContext context, String seniorId, List<String> currentContacts) {
+  void _showManageContactsDialog(
+      BuildContext context, String seniorId, List<String> currentContacts) {
     final phoneController = TextEditingController();
     showDialog(
       context: context,
@@ -327,7 +325,8 @@ class _GuardianDashboardState extends State<GuardianDashboard> {
               children: [
                 Icon(Icons.verified_user_rounded, color: Color(0xFF4338CA)),
                 SizedBox(width: 8),
-                Text('Trusted Contacts', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 20)),
+                Text('Trusted Contacts',
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 20)),
               ],
             ),
             content: SizedBox(
@@ -350,7 +349,8 @@ class _GuardianDashboardState extends State<GuardianDashboard> {
                           decoration: const InputDecoration(
                             hintText: '+91 98765 43210',
                             labelText: 'Add Phone Number',
-                            border: OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(12))),
+                            border: OutlineInputBorder(
+                                borderRadius: BorderRadius.all(Radius.circular(12))),
                           ),
                         ),
                       ),
@@ -359,11 +359,26 @@ class _GuardianDashboardState extends State<GuardianDashboard> {
                         onPressed: () async {
                           final phone = phoneController.text.trim().replaceAll(' ', '');
                           if (phone.isNotEmpty) {
-                            await context.read<AuthProvider>().addTrustedContact(seniorId, phone);
-                            phoneController.clear();
-                            setDialogState(() {
-                              currentContacts.add(phone);
-                            });
+                            try {
+                              await GuardianService().modifyTrustedContacts(
+                                seniorId: seniorId,
+                                phone: phone,
+                                add: true,
+                              );
+                              phoneController.clear();
+                              setDialogState(() {
+                                currentContacts.add(phone);
+                              });
+                            } catch (err) {
+                              if (context.mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    content: Text('Failed to add contact: $err'),
+                                    backgroundColor: Colors.red,
+                                  ),
+                                );
+                              }
+                            }
                           }
                         },
                         icon: const Icon(Icons.add),
@@ -375,7 +390,11 @@ class _GuardianDashboardState extends State<GuardianDashboard> {
                   if (currentContacts.isEmpty)
                     const Padding(
                       padding: EdgeInsets.symmetric(vertical: 16),
-                      child: Text('No trusted contacts added yet.', textAlign: TextAlign.center, style: TextStyle(color: Colors.grey)),
+                      child: Text(
+                        'No trusted contacts added yet.',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(color: Colors.grey),
+                      ),
                     )
                   else
                     SizedBox(
@@ -389,15 +408,32 @@ class _GuardianDashboardState extends State<GuardianDashboard> {
                           return ListTile(
                             dense: true,
                             contentPadding: EdgeInsets.zero,
-                            leading: const Icon(Icons.check_circle, color: Colors.green, size: 20),
-                            title: Text(contact, style: const TextStyle(fontWeight: FontWeight.bold)),
+                            leading:
+                                const Icon(Icons.check_circle, color: Colors.green, size: 20),
+                            title: Text(contact,
+                                style: const TextStyle(fontWeight: FontWeight.bold)),
                             trailing: IconButton(
                               icon: const Icon(Icons.delete_outline, color: Colors.red, size: 20),
                               onPressed: () async {
-                                await context.read<AuthProvider>().removeTrustedContact(seniorId, contact);
-                                setDialogState(() {
-                                  currentContacts.removeAt(index);
-                                });
+                                try {
+                                  await GuardianService().modifyTrustedContacts(
+                                    seniorId: seniorId,
+                                    phone: contact,
+                                    add: false,
+                                  );
+                                  setDialogState(() {
+                                    currentContacts.removeAt(index);
+                                  });
+                                } catch (err) {
+                                  if (context.mounted) {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      SnackBar(
+                                        content: Text('Failed to remove contact: $err'),
+                                        backgroundColor: Colors.red,
+                                      ),
+                                    );
+                                  }
+                                }
                               },
                             ),
                           );
@@ -410,7 +446,8 @@ class _GuardianDashboardState extends State<GuardianDashboard> {
             actions: [
               TextButton(
                 onPressed: () => Navigator.pop(ctx),
-                child: const Text('Done', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                child:
+                    const Text('Done', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
               ),
             ],
           );
@@ -427,16 +464,20 @@ class _GuardianDashboardState extends State<GuardianDashboard> {
         builder: (context, setDialogState) {
           return AlertDialog(
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-            title: const Text('Configure Escrow Hold', style: TextStyle(fontWeight: FontWeight.bold)),
+            title: const Text('Configure Escrow Hold',
+                style: TextStyle(fontWeight: FontWeight.bold)),
             content: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text('Set how long transfers are held before final settlement so the Senior can cancel if scammed:'),
+                const Text(
+                    'Set how long transfers are held before final settlement so the Senior can cancel if scammed:'),
                 const SizedBox(height: 16),
                 DropdownButtonFormField<int>(
                   initialValue: [5, 15, 30, 60, 1440].contains(selected) ? selected : 5,
-                  decoration: const InputDecoration(border: OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(12)))),
+                  decoration: const InputDecoration(
+                      border: OutlineInputBorder(
+                          borderRadius: BorderRadius.all(Radius.circular(12)))),
                   items: const [
                     DropdownMenuItem(value: 5, child: Text('5 minutes (Quick)')),
                     DropdownMenuItem(value: 15, child: Text('15 minutes')),
@@ -457,13 +498,26 @@ class _GuardianDashboardState extends State<GuardianDashboard> {
               ElevatedButton(
                 onPressed: () async {
                   final messenger = ScaffoldMessenger.of(context);
-                  await context.read<AuthProvider>().updateEscrowDelay(seniorId, selected);
-                  if (ctx.mounted) Navigator.pop(ctx);
-                  messenger.showSnackBar(
-                    SnackBar(content: Text('Escrow delay set to $selected minutes.'), backgroundColor: Colors.green),
-                  );
+                  try {
+                    await GuardianService().updateEscrowDelay(seniorId: seniorId, minutes: selected);
+                    if (ctx.mounted) Navigator.pop(ctx);
+                    messenger.showSnackBar(
+                      SnackBar(
+                        content: Text('Escrow delay set to $selected minutes.'),
+                        backgroundColor: Colors.green,
+                      ),
+                    );
+                  } catch (err) {
+                    messenger.showSnackBar(
+                      SnackBar(
+                        content: Text('Failed to update escrow delay: $err'),
+                        backgroundColor: Colors.red,
+                      ),
+                    );
+                  }
                 },
-                style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF4338CA), foregroundColor: Colors.white),
+                style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF4338CA), foregroundColor: Colors.white),
                 child: const Text('Save'),
               ),
             ],
@@ -476,7 +530,6 @@ class _GuardianDashboardState extends State<GuardianDashboard> {
   @override
   Widget build(BuildContext context) {
     final currentUid = context.read<AuthProvider>().user?.uid ?? '';
-    final currencyFormatter = NumberFormat.currency(symbol: '\$', decimalDigits: 2);
 
     return Scaffold(
       backgroundColor: const Color(0xFFF8FAFC),
@@ -615,13 +668,36 @@ class _GuardianDashboardState extends State<GuardianDashboard> {
                                 style: TextStyle(fontSize: 13, color: Colors.grey.shade400),
                               ),
                               const SizedBox(height: 4),
-                              Text(
-                                currencyFormatter.format(seniorBalance),
-                                style: const TextStyle(
-                                  fontSize: 32,
-                                  fontWeight: FontWeight.w800,
-                                  color: Colors.white,
-                                ),
+                              StreamBuilder<DocumentSnapshot>(
+                                stream: seniorId.isNotEmpty
+                                    ? FirebaseFirestore.instance
+                                        .collection('wallets')
+                                        .doc(seniorId)
+                                        .snapshots()
+                                    : null,
+                                builder: (context, walletSnap) {
+                                  if (walletSnap.hasData &&
+                                      walletSnap.data != null &&
+                                      walletSnap.data!.exists) {
+                                    final wallet = Wallet.fromFirestore(walletSnap.data!);
+                                    return Text(
+                                      Money(paise: wallet.availableBalancePaise).formatted,
+                                      style: const TextStyle(
+                                        fontSize: 32,
+                                        fontWeight: FontWeight.w800,
+                                        color: Colors.white,
+                                      ),
+                                    );
+                                  }
+                                  return Text(
+                                    Money(paise: (seniorBalance * 100).round()).formatted,
+                                    style: const TextStyle(
+                                      fontSize: 32,
+                                      fontWeight: FontWeight.w800,
+                                      color: Colors.white,
+                                    ),
+                                  );
+                                },
                               ),
                             ],
                           ),
@@ -643,7 +719,8 @@ class _GuardianDashboardState extends State<GuardianDashboard> {
                         children: [
                           Expanded(
                             child: OutlinedButton.icon(
-                              onPressed: () => _showManageContactsDialog(context, seniorId, trustedContacts),
+                              onPressed: () =>
+                                  _showManageContactsDialog(context, seniorId, trustedContacts),
                               icon: const Icon(Icons.people_outline, size: 18),
                               label: Text('Safe Contacts (${trustedContacts.length})'),
                               style: OutlinedButton.styleFrom(
@@ -656,7 +733,8 @@ class _GuardianDashboardState extends State<GuardianDashboard> {
                           const SizedBox(width: 12),
                           Expanded(
                             child: OutlinedButton.icon(
-                              onPressed: () => _showEscrowDelayDialog(context, seniorId, escrowDelay),
+                              onPressed: () =>
+                                  _showEscrowDelayDialog(context, seniorId, escrowDelay),
                               icon: const Icon(Icons.timer_outlined, size: 18),
                               label: const Text('Escrow Delay'),
                               style: OutlinedButton.styleFrom(
@@ -676,16 +754,15 @@ class _GuardianDashboardState extends State<GuardianDashboard> {
               const SizedBox(height: 28),
 
               // Flagged Approvals Section Header
-              StreamBuilder<QuerySnapshot>(
+              StreamBuilder<List<TransactionModel>>(
                 stream: currentUid.isEmpty
                     ? null
-                    : FirebaseFirestore.instance
-                        .collection('transactions')
-                        .where('guardianId', isEqualTo: currentUid)
-                        .where('status', isEqualTo: 'flagged')
-                        .snapshots(),
+                    : context.read<TransactionProvider>().streamTransactionsForGuardian(currentUid),
                 builder: (context, flaggedSnapshot) {
-                  final flaggedDocs = flaggedSnapshot.data?.docs ?? [];
+                  final allTxs = flaggedSnapshot.data ?? [];
+                  final pendingTxs = allTxs
+                      .where((tx) => tx.status == TransactionStatus.REVIEW_REQUIRED)
+                      .toList();
 
                   return Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -704,13 +781,13 @@ class _GuardianDashboardState extends State<GuardianDashboard> {
                           Container(
                             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
                             decoration: BoxDecoration(
-                              color: flaggedDocs.isNotEmpty
+                              color: pendingTxs.isNotEmpty
                                   ? const Color(0xFFEF4444)
                                   : const Color(0xFF10B981),
                               borderRadius: BorderRadius.circular(12),
                             ),
                             child: Text(
-                              flaggedDocs.length.toString(),
+                              pendingTxs.length.toString(),
                               style: const TextStyle(
                                 color: Colors.white,
                                 fontSize: 13,
@@ -722,7 +799,7 @@ class _GuardianDashboardState extends State<GuardianDashboard> {
                       ),
                       const SizedBox(height: 16),
 
-                      if (flaggedDocs.isEmpty)
+                      if (pendingTxs.isEmpty)
                         Card(
                           elevation: 0,
                           color: Colors.white,
@@ -770,21 +847,23 @@ class _GuardianDashboardState extends State<GuardianDashboard> {
                         )
                       else
                         Column(
-                          children: flaggedDocs.map((doc) {
-                            final txData = doc.data() as Map<String, dynamic>;
-                            final amount = (txData['amount'] is num)
-                                ? (txData['amount'] as num).toDouble()
-                                : 0.0;
-                            final receiverName = txData['receiverName']?.toString() ?? 'Recipient';
-                            final flaggedReason = txData['flaggedReason']?.toString();
-                            final isActiveCall = flaggedReason == 'active_call';
-                            final isUntrusted = flaggedReason == 'untrusted_contact';
-                            final createdAt = (txData['createdAt'] as Timestamp?)?.toDate();
+                          children: pendingTxs.map((tx) {
+                            final txId = tx.id;
+                            final amount = Money(paise: tx.amountPaise).formatted;
+                            final receiverName =
+                                tx.recipientName.isNotEmpty ? tx.recipientName : 'Recipient';
+                            final flaggedReason =
+                                tx.riskReasons.isNotEmpty ? tx.riskReasons.join(', ') : 'Unknown';
+                            final isActiveCall = tx.riskReasons.contains('active_call') ||
+                                tx.riskReasons.any((r) => r.toLowerCase().contains('call'));
+                            final isUntrusted = tx.riskReasons.contains('untrusted_contact') ||
+                                tx.riskReasons.any((r) => r.toLowerCase().contains('untrusted'));
+                            final createdAt = tx.createdAt;
                             final dateStr = createdAt != null
                                 ? DateFormat('MMM d, yyyy • h:mm a').format(createdAt)
                                 : 'Just now';
 
-                            String warningMsg = 'FLAGGED: Suspicious Activity';
+                            String warningMsg = 'FLAGGED: $flaggedReason';
                             IconData warningIcon = Icons.warning_amber_rounded;
                             if (isActiveCall) {
                               warningMsg = 'FLAGGED: Active Phone Call Detected';
@@ -845,12 +924,13 @@ class _GuardianDashboardState extends State<GuardianDashboard> {
                                           ),
                                           Text(
                                             dateStr,
-                                            style: TextStyle(fontSize: 13, color: Colors.grey.shade500),
+                                            style: TextStyle(
+                                                fontSize: 13, color: Colors.grey.shade500),
                                           ),
                                         ],
                                       ),
                                       Text(
-                                        currencyFormatter.format(amount),
+                                        amount,
                                         style: const TextStyle(
                                           fontSize: 24,
                                           fontWeight: FontWeight.w800,
@@ -866,14 +946,16 @@ class _GuardianDashboardState extends State<GuardianDashboard> {
                                         child: OutlinedButton(
                                           onPressed: _isProcessing
                                               ? null
-                                              : () => _denyTransfer(doc.id, receiverName, amount),
+                                              : () => _denyTransfer(txId, receiverName, amount),
                                           style: OutlinedButton.styleFrom(
                                             foregroundColor: Colors.red,
                                             side: const BorderSide(color: Colors.red),
                                             padding: const EdgeInsets.symmetric(vertical: 14),
-                                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                                            shape: RoundedRectangleBorder(
+                                                borderRadius: BorderRadius.circular(14)),
                                           ),
-                                          child: const Text('Block & Refund', style: TextStyle(fontWeight: FontWeight.bold)),
+                                          child: const Text('Block & Refund',
+                                              style: TextStyle(fontWeight: FontWeight.bold)),
                                         ),
                                       ),
                                       const SizedBox(width: 12),
@@ -881,14 +963,16 @@ class _GuardianDashboardState extends State<GuardianDashboard> {
                                         child: ElevatedButton(
                                           onPressed: _isProcessing
                                               ? null
-                                              : () => _authenticateAndApprove(doc.id),
+                                              : () => _authenticateAndApprove(txId),
                                           style: ElevatedButton.styleFrom(
                                             backgroundColor: const Color(0xFF16A34A),
                                             foregroundColor: Colors.white,
                                             padding: const EdgeInsets.symmetric(vertical: 14),
-                                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                                            shape: RoundedRectangleBorder(
+                                                borderRadius: BorderRadius.circular(14)),
                                           ),
-                                          child: const Text('Approve', style: TextStyle(fontWeight: FontWeight.bold)),
+                                          child: const Text('Approve',
+                                              style: TextStyle(fontWeight: FontWeight.bold)),
                                         ),
                                       ),
                                     ],
@@ -905,7 +989,7 @@ class _GuardianDashboardState extends State<GuardianDashboard> {
 
               const SizedBox(height: 32),
 
-              // Audit History Log
+              // Activity & Audit History
               const Text(
                 'Activity & Audit History',
                 style: TextStyle(
@@ -916,18 +1000,17 @@ class _GuardianDashboardState extends State<GuardianDashboard> {
               ),
               const SizedBox(height: 16),
 
-              StreamBuilder<QuerySnapshot>(
+              StreamBuilder<List<TransactionModel>>(
                 stream: currentUid.isEmpty
                     ? null
-                    : FirebaseFirestore.instance
-                        .collection('transactions')
-                        .where('guardianId', isEqualTo: currentUid)
-                        .where('status', whereIn: ['completed', 'cancelled', 'pending'])
-                        .snapshots(),
+                    : context.read<TransactionProvider>().streamTransactionsForGuardian(currentUid),
                 builder: (context, auditSnapshot) {
-                  final auditDocs = auditSnapshot.data?.docs ?? [];
+                  final allTxs = auditSnapshot.data ?? [];
+                  final auditTxs = allTxs
+                      .where((tx) => tx.status != TransactionStatus.REVIEW_REQUIRED)
+                      .toList();
 
-                  if (auditDocs.isEmpty) {
+                  if (auditTxs.isEmpty) {
                     return Container(
                       padding: const EdgeInsets.all(24),
                       decoration: BoxDecoration(
@@ -945,18 +1028,23 @@ class _GuardianDashboardState extends State<GuardianDashboard> {
                   }
 
                   return Column(
-                    children: auditDocs.map((doc) {
-                      final data = doc.data() as Map<String, dynamic>;
-                      final amount = (data['amount'] is num) ? (data['amount'] as num).toDouble() : 0.0;
-                      final receiver = data['receiverName'] ?? 'Recipient';
-                      final status = data['status'] ?? 'unknown';
-                      final createdAt = (data['createdAt'] as Timestamp?)?.toDate();
-                      final dateStr = createdAt != null ? DateFormat('MMM d, h:mm a').format(createdAt) : '';
+                    children: auditTxs.map((tx) {
+                      final amount = Money(paise: tx.amountPaise).formatted;
+                      final receiver =
+                          tx.recipientName.isNotEmpty ? tx.recipientName : 'Recipient';
+                      final status = tx.status.name;
+                      final createdAt = tx.createdAt;
+                      final dateStr =
+                          createdAt != null ? DateFormat('MMM d, h:mm a').format(createdAt) : '';
 
                       Color chipColor = Colors.grey;
-                      if (status == 'completed') chipColor = Colors.green;
-                      if (status == 'cancelled') chipColor = Colors.red;
-                      if (status == 'pending') chipColor = Colors.orange;
+                      if (status == 'SETTLED' || status == 'APPROVED' || status == 'completed') {
+                        chipColor = Colors.green;
+                      } else if (status == 'CANCELLED' || status == 'DENIED' || status == 'FAILED') {
+                        chipColor = Colors.red;
+                      } else if (status == 'ESCROWED' || status == 'pending' || status == 'REVIEW_REQUIRED') {
+                        chipColor = Colors.orange;
+                      }
 
                       return Container(
                         margin: const EdgeInsets.only(bottom: 12),
@@ -972,28 +1060,37 @@ class _GuardianDashboardState extends State<GuardianDashboard> {
                             Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Text(receiver, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                                Text(receiver,
+                                    style: const TextStyle(
+                                        fontWeight: FontWeight.bold, fontSize: 16)),
                                 const SizedBox(height: 2),
-                                Text(dateStr, style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
+                                Text(dateStr,
+                                    style: TextStyle(
+                                        color: Colors.grey.shade500, fontSize: 12)),
                               ],
                             ),
                             Row(
                               children: [
                                 Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 10, vertical: 4),
                                   decoration: BoxDecoration(
                                     color: chipColor.withValues(alpha: 0.1),
                                     borderRadius: BorderRadius.circular(10),
                                   ),
                                   child: Text(
                                     status,
-                                    style: TextStyle(color: chipColor, fontWeight: FontWeight.bold, fontSize: 12),
+                                    style: TextStyle(
+                                        color: chipColor,
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 12),
                                   ),
                                 ),
                                 const SizedBox(width: 12),
                                 Text(
-                                  currencyFormatter.format(amount),
-                                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                                  amount,
+                                  style: const TextStyle(
+                                      fontWeight: FontWeight.bold, fontSize: 16),
                                 ),
                               ],
                             ),

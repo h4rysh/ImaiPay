@@ -1,20 +1,15 @@
 import 'package:flutter/material.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import '../models/user_profile.dart';
+import '../services/wallet_service.dart';
+import '../models/wallet.dart';
 
 class WalletProvider extends ChangeNotifier {
-  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-
-  Stream<UserProfile?> streamProfile(String uid) {
-    return _firestore.collection('users').doc(uid).snapshots().map((doc) {
-      if (!doc.exists) return null;
-      return UserProfile.fromMap(doc.data()!, doc.id);
-    });
+  final WalletService _walletService = WalletService();
+  
+  Stream<Wallet?> streamWallet(String uid) {
+    return _walletService.streamWallet(uid);
   }
 
-  Future<void> addFunds(String uid, double amount) async {
-    await _firestore.collection('users').doc(uid).update({
-      'walletBalance': FieldValue.increment(amount),
-    });
+  Future<void> addDemoFunds(int amountPaise) async {
+    await _walletService.addDemoFunds(amountPaise);
   }
 }

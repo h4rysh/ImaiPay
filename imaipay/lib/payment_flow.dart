@@ -5,7 +5,9 @@ import 'package:flutter_contacts/flutter_contacts.dart';
 import 'package:phone_state/phone_state.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
+import 'package:uuid/uuid.dart';
 import 'core/providers/auth_provider.dart';
+import 'core/services/transfer_service.dart';
 
 class PaymentFlowScreen extends StatefulWidget {
   const PaymentFlowScreen({super.key});
@@ -150,10 +152,6 @@ class _PaymentFlowScreenState extends State<PaymentFlowScreen> {
       return;
     }
     
-    final senderUid = authProvider.user!.uid;
-    final userProfile = authProvider.userProfile;
-    final trustedContacts = userProfile?.trustedContacts ?? [];
-    
     if (_amount <= 0) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Please enter a valid amount.')),
@@ -163,44 +161,23 @@ class _PaymentFlowScreenState extends State<PaymentFlowScreen> {
 
     setState(() => _isProcessing = true);
 
-    String status = 'pending';
-    String? flaggedReason;
-
-    final isTrusted = _selectedPhoneNumber != null && 
-        trustedContacts.contains(_selectedPhoneNumber!);
-
-    if (_isCallActive) {
-      status = 'flagged';
-      flaggedReason = 'active_call';
-    } else if (!isTrusted) {
-      status = 'flagged';
-      flaggedReason = 'untrusted_contact';
-    } else if (_amount > 1000) {
-      status = 'flagged';
-      flaggedReason = 'high_value';
-    }
-
     try {
-      await FirebaseFirestore.instance.collection('transactions').add({
-        'senderId': senderUid,
-        'receiverName': _selectedContactName ?? 'Unknown',
-        'receiverPhoneNumber': _selectedPhoneNumber ?? '',
-        'receiverPhone': _selectedPhoneNumber ?? '',
-        'amount': _amount,
-        'status': status,
-        'flaggedReason': flaggedReason,
-        'guardianId': userProfile?.linkedGuardianId, // for guardian querying
-        'createdAt': FieldValue.serverTimestamp(),
-      });
-
-      await FirebaseFirestore.instance.collection('users').doc(senderUid).update({
-        'walletBalance': FieldValue.increment(-_amount),
-      });
+      final transferService = TransferService();
+      final amountPaise = (_amount * 100).round();
+      final requestId = const Uuid().v4();
+      
+      final result = await transferService.createTransfer(
+        requestId: requestId,
+        recipientName: _selectedContactName ?? 'Unknown',
+        recipientPhone: _selectedPhoneNumber ?? '',
+        amountPaise: amountPaise,
+      );
 
       if (!mounted) return;
       setState(() => _isProcessing = false);
 
-      final bool isFlagged = status == 'flagged';
+      final status = result['status'] as String?;
+      final bool isFlagged = status == 'REVIEW_REQUIRED';
 
       await showDialog(
         context: context,
@@ -437,7 +414,7 @@ class _PaymentFlowScreenState extends State<PaymentFlowScreen> {
           const Spacer(),
           Center(
             child: Text(
-              '\$$_amountString',
+              '₹$_amountString',
               style: const TextStyle(fontSize: 72, fontWeight: FontWeight.bold),
             ),
           ),
@@ -538,7 +515,7 @@ class _PaymentFlowScreenState extends State<PaymentFlowScreen> {
                 Text('Amount', style: TextStyle(fontSize: 24, color: Colors.grey[600])),
                 const SizedBox(height: 8),
                 Text(
-                  '\$$_amountString',
+                  '₹$_amountString',
                   style: const TextStyle(fontSize: 56, fontWeight: FontWeight.w800),
                 ),
               ],

@@ -10,35 +10,82 @@ service cloud.firestore {
     function isOwner(userId) {
       return isAuthenticated() && request.auth.uid == userId;
     }
-
-    // Users collection
-    match /users/{userId} {
-      // Allow read to authenticated users (searching by phone number or linking code, viewing profiles)
-      allow read: if isAuthenticated();
-
-      // Allow users to create their own profile document
-      allow create: if isOwner(userId);
-
-      // Allow updates if:
-      // 1. User owns the document (updating profile, generating linking code, etc.)
-      // 2. Guardian linking flow (setting linkedGuardianId and clearing linkingCode)
-      // 3. Linked guardian modifying senior document (e.g. adding funds)
-      // 4. Wallet balance updates by authenticated users
-      allow update: if isAuthenticated() && (
-        isOwner(userId) ||
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['linkedGuardianId', 'linkingCode']) ||
-        resource.data.get('linkedGuardianId', null) == request.auth.uid ||
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['walletBalance'])
-      );
-
-      // Allow users to delete their own profile
-      allow delete: if isOwner(userId);
+    
+    function isLinkedGuardian(seniorId) {
+      return isAuthenticated() && 
+             get(/databases/$(database)/documents/users/$(seniorId)).data.linkedGuardianId == request.auth.uid;
     }
 
-    // Transactions collection
+    // Users collection (Identity & Links only)
+    match /users/{userId} {
+      // Owner can read their own profile.
+      // Guardian can read the profile of a senior they are linked to (optimized for queries)
+      allow read: if isOwner(userId) || (isAuthenticated() && resource.data.linkedGuardianId == request.auth.uid);
+      
+      // Allow searching by phone number (for trusted contacts UI)
+      // Allow auth flow to check if a user exists
+      allow read: if isAuthenticated() && (
+        request.query.limit <= 1 || 
+        resource == null
+      );
+
+      // Only the owner can create their initial profile document
+      allow create: if isOwner(userId) && 
+        // Cannot self-assign a guardian or senior links on creation
+        !request.resource.data.keys().hasAny(['linkedGuardianId', 'linkedSeniorIds']);
+
+      // Clients cannot update role, linkedGuardianId, linkedSeniorIds.
+      allow update: if isOwner(userId) && 
+        !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'linkedGuardianId', 'linkedSeniorIds', 'escrowDelayMinutes', 'trustedContacts']);
+        
+      allow delete: if false; // Managed via Cloud Functions
+    }
+
+    // Wallets collection (Financial State)
+    match /wallets/{userId} {
+      // Owner can read their wallet balance
+      // Guardian can read their linked senior's wallet balance
+      allow read: if isOwner(userId) || isLinkedGuardian(userId);
+      
+      // NO CLIENT WRITES ALLOWED. Strictly Cloud Functions only.
+      allow write: if false;
+      
+      // Ledger subcollection
+      match /ledger/{entryId} {
+        // Owner and Guardian can read ledger
+        allow read: if isOwner(userId) || isLinkedGuardian(userId);
+        
+        // NO CLIENT WRITES ALLOWED. Strictly Cloud Functions only.
+        allow write: if false;
+      }
+    }
+
+    // Transactions collection (State Machine)
     match /transactions/{transactionId} {
-      // Allow authenticated users to read and write transactions
-      allow read, write: if isAuthenticated();
+      // Sender can read their own transactions
+      // Guardian can read transactions where they are the guardian
+      allow read: if isAuthenticated() && (
+        resource.data.senderId == request.auth.uid ||
+        resource.data.guardianId == request.auth.uid ||
+        isLinkedGuardian(resource.data.senderId)
+      );
+
+      // NO CLIENT WRITES ALLOWED. Strictly Cloud Functions only.
+      allow write: if false;
+    }
+
+    // Pairing Sessions collection
+    match /pairingSessions/{sessionId} {
+      // Senior can read their own session to see if it's used
+      allow read: if isAuthenticated() && resource.data.seniorId == request.auth.uid;
+      
+      // NO CLIENT WRITES ALLOWED.
+      allow write: if false;
+    }
+
+    // Audit Logs collection
+    match /auditLogs/{eventId} {
+      allow read, write: if false;
     }
 
     // Deny access to all other documents by default

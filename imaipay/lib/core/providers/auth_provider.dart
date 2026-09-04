@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../models/user_profile.dart';
-import 'dart:math';
 
 class AuthProvider extends ChangeNotifier {
   final FirebaseAuth _auth = FirebaseAuth.instance;
@@ -57,6 +56,14 @@ class AuthProvider extends ChangeNotifier {
     }
   }
 
+  Stream<UserProfile?> streamProfile(String uid) {
+    if (uid.isEmpty) return Stream.value(null);
+    return _firestore.collection('users').doc(uid).snapshots().map((doc) {
+      if (!doc.exists) return null;
+      return UserProfile.fromMap(doc.data()!, doc.id);
+    });
+  }
+
   Future<void> verifyPhoneNumber({
     required String phoneNumber,
     required Function(String verificationId) codeSent,
@@ -92,7 +99,6 @@ class AuthProvider extends ChangeNotifier {
 
   Future<void> _signInWithCredential(PhoneAuthCredential credential) async {
     final userCred = await _auth.signInWithCredential(credential);
-    // If it's a new user, they need to create a profile (handled separately)
     await _fetchUserProfile(userCred.user!.uid);
     notifyListeners();
   }
@@ -100,127 +106,18 @@ class AuthProvider extends ChangeNotifier {
   Future<void> createUserProfile(UserRole role) async {
     if (_user == null) return;
     
-    _userProfile = UserProfile(
-      uid: _user!.uid,
-      phoneNumber: _user!.phoneNumber ?? '',
-      role: role,
-      walletBalance: role == UserRole.senior ? 500.0 : 0.0, // Give seniors some starting money for testing
-    );
+    final data = {
+      'phoneNumber': _user!.phoneNumber ?? '',
+      'role': role == UserRole.guardian ? 'guardian' : 'senior',
+      'createdAt': FieldValue.serverTimestamp(),
+    };
     
-    await _firestore.collection('users').doc(_user!.uid).set(_userProfile!.toMap());
+    await _firestore.collection('users').doc(_user!.uid).set(data);
+    await _fetchUserProfile(_user!.uid);
     notifyListeners();
   }
 
   Future<void> signOut() async {
     await _auth.signOut();
-  }
-
-  // Linking logic
-  Future<String> generateLinkingCode() async {
-    if (_userProfile == null || _userProfile!.role != UserRole.senior) return '';
-    
-    final code = (100000 + Random().nextInt(900000)).toString(); // 6 digit code
-    await _firestore.collection('users').doc(_user!.uid).update({
-      'linkingCode': code,
-    });
-    
-    _userProfile = UserProfile(
-      uid: _userProfile!.uid,
-      phoneNumber: _userProfile!.phoneNumber,
-      role: _userProfile!.role,
-      walletBalance: _userProfile!.walletBalance,
-      linkedGuardianId: _userProfile!.linkedGuardianId,
-      linkingCode: code,
-    );
-    notifyListeners();
-    return code;
-  }
-
-  Future<void> skipLinkingForDemo() async {
-    if (_user == null || _userProfile == null) return;
-    await _firestore.collection('users').doc(_user!.uid).update({
-      'linkedGuardianId': 'demo_guardian_1',
-    });
-    await _fetchUserProfile(_user!.uid);
-    notifyListeners();
-  }
-
-  Future<bool> linkWithCode(String code) async {
-    if (_userProfile == null || _userProfile!.role != UserRole.guardian) return false;
-    
-    // Find the senior with this code
-    final snapshot = await _firestore
-        .collection('users')
-        .where('linkingCode', isEqualTo: code.trim())
-        .limit(1)
-        .get();
-        
-    if (snapshot.docs.isEmpty) return false;
-    
-    final seniorDoc = snapshot.docs.first;
-    
-    // Link Senior to Guardian
-    await _firestore.collection('users').doc(seniorDoc.id).update({
-      'linkedGuardianId': _user!.uid,
-      'linkingCode': null, // Clear it after use
-    });
-
-    // Add Senior to Guardian's linked list
-    await _firestore.collection('users').doc(_user!.uid).update({
-      'linkedSeniorIds': FieldValue.arrayUnion([seniorDoc.id]),
-    });
-    
-    await _fetchUserProfile(_user!.uid);
-    notifyListeners();
-    return true;
-  }
-
-  Future<void> unlinkSenior(String seniorId) async {
-    if (_user == null) return;
-    await _firestore.collection('users').doc(seniorId).update({
-      'linkedGuardianId': null,
-    });
-    await _firestore.collection('users').doc(_user!.uid).update({
-      'linkedSeniorIds': FieldValue.arrayRemove([seniorId]),
-    });
-    await _fetchUserProfile(_user!.uid);
-    notifyListeners();
-  }
-
-  Future<void> unlinkSelfFromGuardian() async {
-    if (_user == null) return;
-    final guardianId = _userProfile?.linkedGuardianId;
-    await _firestore.collection('users').doc(_user!.uid).update({
-      'linkedGuardianId': null,
-    });
-    if (guardianId != null && guardianId.isNotEmpty) {
-      await _firestore.collection('users').doc(guardianId).update({
-        'linkedSeniorIds': FieldValue.arrayRemove([_user!.uid]),
-      });
-    }
-    await _fetchUserProfile(_user!.uid);
-    notifyListeners();
-  }
-
-  Future<void> updateEscrowDelay(String targetUid, int minutes) async {
-    await _firestore.collection('users').doc(targetUid).update({
-      'escrowDelayMinutes': minutes,
-    });
-    if (_user != null) {
-      await _fetchUserProfile(_user!.uid);
-      notifyListeners();
-    }
-  }
-
-  Future<void> addTrustedContact(String seniorUid, String phone) async {
-    await _firestore.collection('users').doc(seniorUid).update({
-      'trustedContacts': FieldValue.arrayUnion([phone]),
-    });
-  }
-
-  Future<void> removeTrustedContact(String seniorUid, String phone) async {
-    await _firestore.collection('users').doc(seniorUid).update({
-      'trustedContacts': FieldValue.arrayRemove([phone]),
-    });
   }
 }
