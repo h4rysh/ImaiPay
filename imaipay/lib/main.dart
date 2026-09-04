@@ -1,3 +1,4 @@
+import 'core/theme/design_system.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:firebase_core/firebase_core.dart';
@@ -19,6 +20,7 @@ import 'dart:io';
 // Mock IDs retained for backward compatibility with payment_flow.dart
 const String mockSeniorId = 'senior_user_1';
 const String mockGuardianId = 'guardian_user_1';
+
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -52,14 +54,8 @@ class ImaiPayApp extends StatelessWidget {
       ],
       child: MaterialApp(
         title: 'ImaiPay',
+        theme: ImaiDesignSystem.theme,
         debugShowCheckedModeBanner: false,
-        theme: ThemeData(
-          colorScheme: ColorScheme.fromSeed(
-            seedColor: const Color(0xFF6C63FF),
-            brightness: Brightness.light,
-          ),
-          useMaterial3: true,
-        ),
         home: Consumer<AuthProvider>(
           builder: (context, authProvider, _) {
             if (authProvider.isLoading) {
